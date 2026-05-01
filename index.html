@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MoneyFlow Desk</title>
+    <meta
+      name="description"
+      content="MoneyFlow is a Polymarket paper-trading dashboard for scanning markets, ranking signals, and reviewing strategy output."
+    />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Fraunces:wght@600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-icon">MF</div>
+          <div>
+            <p class="brand-title">MoneyFlow</p>
+            <p class="brand-subtitle">Polymarket paper-trading desk</p>
+          </div>
+        </div>
+
+        <nav class="nav">
+          <a class="nav-link active" href="#dashboard">Dashboard</a>
+          <a class="nav-link" href="#signals">Signals</a>
+          <a class="nav-link" href="#scanner">Markets</a>
+          <a class="nav-link" href="#controls">Strategy</a>
+        </nav>
+
+        <div class="sidebar-metrics">
+          <div>
+            <p class="sidebar-label">Paper balance</p>
+            <p class="sidebar-value" data-balance>$100.00</p>
+          </div>
+          <div>
+            <p class="sidebar-label">Signal threshold</p>
+            <p class="sidebar-value" data-threshold>7.00%</p>
+          </div>
+          <div>
+            <p class="sidebar-label">Loop interval</p>
+            <p class="sidebar-value">120s</p>
+          </div>
+          <p class="sidebar-note">
+            Static deployment view. The local Python bot remains the source of live paper-trading execution.
+          </p>
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="topbar" id="dashboard">
+          <div>
+            <h1>Dashboard</h1>
+            <p class="timestamp" data-updated>Updated May 01, 2026 09:09 UTC</p>
+          </div>
+          <a class="button ghost" href="https://github.com/everyai-com/MoneyFlow/pull/1">View PR</a>
+        </header>
+
+        <section class="hero-grid">
+          <article class="card hero-card">
+            <p class="eyebrow"><span class="dot"></span> Bot status: paper mode</p>
+            <h2>Scanning. Ranking. Simulating.</h2>
+            <p class="hero-copy">
+              A Netlify-friendly dashboard for browsing the MoneyFlow strategy surface even when the Python bot is not running.
+            </p>
+            <div class="pill" data-pill>Static deploy preview</div>
+          </article>
+
+          <article class="card stat-card">
+            <p class="stat-label">Highest edge right now</p>
+            <p class="stat-value" data-best-edge>7.27%</p>
+            <p class="stat-caption">Average across current qualified signals</p>
+            <div class="stat-divider"></div>
+            <p class="stat-label">Suggested max position</p>
+            <p class="stat-value" data-max-position>$25.00</p>
+          </article>
+        </section>
+
+        <div class="banner">
+          Netlify deployment is showing static dashboard data. For live market polling and paper execution, run the local Python bot.
+        </div>
+
+        <section class="kpi-grid">
+          <article class="card kpi">
+            <p class="kpi-label">Tradeable markets</p>
+            <p class="kpi-value" data-market-count>3</p>
+            <p class="kpi-note">Markets passing top-level liquidity filters.</p>
+          </article>
+          <article class="card kpi">
+            <p class="kpi-label">Signals now</p>
+            <p class="kpi-value" data-signal-count>3</p>
+            <p class="kpi-note">Qualified opportunities after strategy filtering.</p>
+          </article>
+          <article class="card kpi">
+            <p class="kpi-label">Average edge</p>
+            <p class="kpi-value" data-average-edge>7.27%</p>
+            <p class="kpi-note">Mean edge across the current static review set.</p>
+          </article>
+          <article class="card kpi">
+            <p class="kpi-label">Confidence</p>
+            <p class="kpi-value" data-confidence>73/99</p>
+            <p class="kpi-note">Derived from the signal ranking model.</p>
+          </article>
+        </section>
+
+        <section class="card table-card" id="signals">
+          <div class="section-head">
+            <h3>Top Active Signals</h3>
+            <p>Static deployment sample of the dashboard signal table.</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Market</th>
+                  <th>Direction</th>
+                  <th>Edge</th>
+                  <th>Confidence</th>
+                  <th>Entry</th>
+                  <th>Size (USDC)</th>
+                  <th>Expiry</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="signals-table"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel-grid">
+          <article class="card panel" id="scanner">
+            <div class="section-head">
+              <h3>Market Scanner</h3>
+              <p>Highest-volume markets from the latest review set.</p>
+            </div>
+            <div id="scanner-list" class="stack"></div>
+          </article>
+
+          <article class="card panel">
+            <div class="section-head">
+              <h3>Recent Activity</h3>
+              <p>Signals and status messages for the deploy preview.</p>
+            </div>
+            <div id="activity-list" class="stack"></div>
+          </article>
+
+          <article class="card panel" id="controls">
+            <div class="section-head">
+              <h3>Strategy Controls</h3>
+              <p>Visual-only controls for the static deployment.</p>
+            </div>
+            <div class="controls">
+              <label>
+                <span>Mode</span>
+                <select>
+                  <option>Paper trading</option>
+                  <option>Live mode disabled</option>
+                </select>
+              </label>
+              <label>
+                <span>Risk per trade</span>
+                <input type="range" min="1" max="5" value="2" />
+              </label>
+              <label>
+                <span>Max open position</span>
+                <input type="range" min="5" max="100" value="25" />
+              </label>
+              <label>
+                <span>Edge threshold</span>
+                <input type="range" min="1" max="20" value="7" />
+              </label>
+              <button class="button" type="button" disabled>Save local view</button>
+            </div>
+          </article>
+        </section>
+
+        <footer class="footer-card">
+          Paper trading only. This deployed view is intended for UI review and GitHub-connected previews. The live bot remains Python-based.
+        </footer>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
