@@ -9,6 +9,7 @@
  */
 
 import type * as http from "../http.js";
+import type * as paperBets from "../paperBets.js";
 import type * as research from "../research.js";
 import type * as snapshots from "../snapshots.js";
 
@@ -20,6 +21,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   http: typeof http;
+  paperBets: typeof paperBets;
   research: typeof research;
   snapshots: typeof snapshots;
 }>;
