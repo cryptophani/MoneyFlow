@@ -420,7 +420,7 @@ def _render_signals_table(snapshot: dict) -> None:
                 for signal in signals
             ]
         )
-        st.dataframe(frame, use_container_width=True, hide_index=True)
+        st.dataframe(frame, width="stretch", hide_index=True)
     else:
         st.info("No signals qualified in this scan. Lower the thresholds or wait for a new market state.")
 
