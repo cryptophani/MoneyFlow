@@ -1,19 +1,20 @@
 # MoneyFlow — Polymarket Paper Trading Bot
 
-An automated prediction market trading bot for Polymarket, built for signal generation, edge calculation, and simulated paper trading with AI-powered news analysis.
+An automated prediction market trading bot for Polymarket, built for signal generation, edge calculation, and simulated paper trading with a local dashboard for inspection.
 
 ---
 
 ## What It Does
 
 - Scans live Polymarket markets every 2 minutes
-- Calculates edge using orderbook imbalance, price signals, and Perplexity AI news research
+- Calculates edge using market price and orderbook imbalance
 - Filters markets by volume, liquidity, time-to-resolution, and question type
 - Uses Kelly Criterion for optimal bet sizing
 - Logs all signals and trades to Google Sheets
 - Sends email alerts on every signal
 - Tracks resolved bets and calculates real P&L
 - Writes a 12-hour P&L report automatically
+- Includes a Streamlit dashboard for local monitoring
 
 ---
 
@@ -21,9 +22,9 @@ An automated prediction market trading bot for Polymarket, built for signal gene
 
 - Python 3.10+
 - Polymarket CLOB API
-- Perplexity AI (sonar model) for news-based probability estimation
 - Google Sheets API for logging
 - Gmail SMTP for alerts
+- Streamlit for the local dashboard UI
 
 ---
 
@@ -81,6 +82,12 @@ PAPER_TRADE=true
 python main.py
 ```
 
+### 6. Launch the dashboard
+
+```bash
+streamlit run dashboard_app.py
+```
+
 ---
 
 ## Paper Trade Mode
@@ -99,11 +106,11 @@ To switch to live trading, set `PAPER_TRADE=false` and add real wallet credentia
 ## How Edge Is Calculated
 
 ```
-model_prob = 0.5 × (price + orderbook_signal) + 0.5 × perplexity_prob
+model_prob = price + orderbook_signal + mean_reversion_term
 edge = model_prob - market_price
 ```
 
-A signal is generated when `edge ≥ EDGE_THRESHOLD` (default 0.06).
+A signal is generated when `edge ≥ EDGE_THRESHOLD`.
 
 Bet size is calculated using Kelly Criterion:
 
@@ -120,13 +127,14 @@ size = Kelly % × KELLY_FRACTION × wallet_balance
 MoneyFlow/
 ├── main.py              # Main loop
 ├── strategy.py          # Edge calculation + signal generation
-├── news_scorer.py       # Perplexity AI news research
 ├── market_data.py       # Polymarket API fetching
 ├── trader.py            # Order execution (paper + live)
 ├── sheets.py            # Google Sheets logging
 ├── emailer.py           # Email alerts
 ├── result_checker.py    # Tracks resolved bets
 ├── pnl_report.py        # 12-hour P&L reports
+├── dashboard_app.py     # Streamlit dashboard
+├── dashboard_data.py    # Dashboard snapshot builder
 ├── config.py            # All settings from .env
 ├── requirements.txt     # Dependencies
 ├── .env.example         # Environment variable template
@@ -138,7 +146,7 @@ MoneyFlow/
 ## Security
 
 - Never commit your `.env` or `creds.json`
-- Both are excluded via `.gitignore`
+- Both should be excluded via `.gitignore`
 - Use `PAPER_TRADE=true` until you have validated edge over 100+ simulated bets
 
 ---

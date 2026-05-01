@@ -40,6 +40,7 @@ def send_email(subject: str, body: str):
 
 
 def alert_trade(signal: dict, result: dict):
+    features = signal.get("features", {})
     mode = "[PAPER] " if PAPER_TRADE else "[LIVE] "
     subject = f"{mode}Trade: {signal['side']} {signal['slug']} | Edge {signal['edge']:.3f}"
 
@@ -59,9 +60,9 @@ Size (USDC):  ${result.get('size_usdc', 'N/A')}
 Status:       {result.get('status', 'unknown')}
 
 Features:
-  RSI:              {signal['features'].get('rsi', 'N/A')}
-  Momentum:         {signal['features'].get('momentum', 'N/A')}
-  Order Imbalance:  {signal['features'].get('imbalance', 'N/A')}
+  Price deviation:  {features.get('price_deviation', 'N/A')}
+  Liquidity:        {features.get('liquidity', 'N/A')}
+  Order Imbalance:  {features.get('imbalance', 'N/A')}
   Spread:           {signal.get('spread', 'N/A')}
 {'='*50}
 """

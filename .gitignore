@@ -1,0 +1,8 @@
+.env
+creds.json
+Downloads/polymarket-bot/creds.json
+__pycache__/
+*.pyc
+.streamlit/
+.venv/
+.playwright-mcp/

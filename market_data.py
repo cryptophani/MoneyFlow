@@ -101,22 +101,31 @@ def fetch_order_book_features(clob_client, token_id: str) -> dict:
         data = _get(f"{CLOB_REST_URL}/book", params={"token_id": token_id})
 
         if not data:
-            return {"imbalance": 0.0}
+            return {"imbalance": 0.0, "liquidity": 0.0, "spread": 0.0}
 
         bids = data.get("bids", [])
         asks = data.get("asks", [])
 
         bid_vol = sum(float(b["price"]) * float(b["size"]) for b in bids[:5])
         ask_vol = sum(float(a["price"]) * float(a["size"]) for a in asks[:5])
+        best_bid = float(bids[0]["price"]) if bids else 0.0
+        best_ask = float(asks[0]["price"]) if asks else 0.0
 
         total = bid_vol + ask_vol
         imbalance = (bid_vol - ask_vol) / total if total > 0 else 0.0
+        spread = max(0.0, best_ask - best_bid) if best_bid and best_ask else 0.0
 
-        return {"imbalance": imbalance}
+        return {
+            "imbalance": imbalance,
+            "liquidity": total,
+            "spread": spread,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+        }
 
     except Exception as e:
         logger.warning(f"Order book error: {e}")
-        return {"imbalance": 0.0}
+        return {"imbalance": 0.0, "liquidity": 0.0, "spread": 0.0}
 
 
 # ── Price history (CORRECT: Data API + gamma_id) ────────────
