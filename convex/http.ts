@@ -34,6 +34,15 @@ http.route({
 });
 
 http.route({
+  path: "/research",
+  method: "GET",
+  handler: httpAction(async (ctx) => {
+    const research = await ctx.runQuery(api.research.latest, {});
+    return json({ research });
+  }),
+});
+
+http.route({
   path: "/ingest/snapshot",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
@@ -42,7 +51,7 @@ http.route({
       return json({ ok: false, error: "unauthorized" }, 401);
     }
 
-    const payload = await request.json();
+    const payload = (await request.json()) as Record<string, unknown>;
     const result = await ctx.runMutation(api.snapshots.ingest, {
       updatedAt: String(payload.updatedAt ?? new Date().toISOString()),
       source: payload.source === "demo" || payload.source === "cache" ? payload.source : "live",
@@ -58,6 +67,24 @@ http.route({
       balance: String(payload.balance ?? "$0.00"),
       pill: String(payload.pill ?? "Convex ingest"),
       payload,
+    });
+
+    return json(result);
+  }),
+});
+
+http.route({
+  path: "/ingest/research",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const expectedSecret = process.env.WORKER_INGEST_SECRET;
+    if (!expectedSecret || request.headers.get("x-ingest-secret") !== expectedSecret) {
+      return json({ ok: false, error: "unauthorized" }, 401);
+    }
+
+    const payload = (await request.json()) as { briefs?: unknown[] };
+    const result = await ctx.runMutation(api.research.ingestBatch, {
+      briefs: Array.isArray(payload.briefs) ? (payload.briefs as never[]) : [],
     });
 
     return json(result);

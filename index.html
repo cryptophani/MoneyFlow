@@ -6,200 +6,219 @@
     <title>MoneyFlow Desk</title>
     <meta
       name="description"
-      content="MoneyFlow is a Polymarket paper-trading dashboard for scanning markets, ranking signals, and reviewing strategy output."
+      content="MoneyFlow is a category-specialized paper-trading desk for prediction-market scanning, research, and review."
     />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Fraunces:wght@600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="shell">
+    <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-icon">MF</div>
+          <div class="brand-mark">MF</div>
           <div>
-            <p class="brand-title">MoneyFlow</p>
-            <p class="brand-subtitle">Polymarket paper-trading desk</p>
+            <p class="brand-name">MoneyFlow</p>
+            <p class="brand-copy">research desk</p>
           </div>
         </div>
 
-        <nav class="nav">
-          <a class="nav-link active" href="#dashboard">Dashboard</a>
+        <nav class="sidebar-nav">
+          <a class="nav-link active" href="#desk">Desk</a>
           <a class="nav-link" href="#signals">Signals</a>
-          <a class="nav-link" href="#scanner">Markets</a>
-          <a class="nav-link" href="#controls">Strategy</a>
+          <a class="nav-link" href="#research">Research</a>
+          <a class="nav-link" href="#history">History</a>
         </nav>
 
-        <div class="sidebar-metrics">
-          <div>
-            <p class="sidebar-label">Paper balance</p>
-            <p class="sidebar-value" data-balance>$100.00</p>
+        <div class="sidebar-group">
+          <p class="sidebar-label">Focus</p>
+          <div class="tag-stack">
+            <span class="chip">Politics</span>
+            <span class="chip">Macro</span>
+            <span class="chip">Awards</span>
           </div>
-          <div>
-            <p class="sidebar-label">Signal threshold</p>
-            <p class="sidebar-value" data-threshold>7.00%</p>
-          </div>
-          <div>
-            <p class="sidebar-label">Loop interval</p>
-            <p class="sidebar-value">120s</p>
-          </div>
-          <p class="sidebar-note">
-            Cloudflare serves the public UI and API. Convex now stores snapshot history behind the Worker.
-          </p>
+        </div>
+
+        <div class="sidebar-group">
+          <p class="sidebar-label">Mode</p>
+          <p class="sidebar-value">Paper only</p>
+          <p class="sidebar-meta">Research from Exa, storage in Convex, delivery on Cloudflare.</p>
+        </div>
+
+        <div class="sidebar-group">
+          <p class="sidebar-label">Desk State</p>
+          <p class="sidebar-value" data-pill>Loading…</p>
+          <p class="sidebar-meta" data-updated>Updated —</p>
         </div>
       </aside>
 
-      <main class="content">
-        <header class="topbar" id="dashboard">
-          <div>
-            <h1>Dashboard</h1>
-            <p class="timestamp" data-updated>Updated May 01, 2026 09:09 UTC</p>
+      <main class="main">
+        <header class="topbar" id="desk">
+          <div class="topbar-copy">
+            <p class="kicker">Minimal operator console</p>
+            <h1>Scan fewer markets. Know why each one matters.</h1>
+            <p class="lede">
+              MoneyFlow is built as a focused paper-trading desk: category specialization, contrarian research, and a clean run history instead of a noisy generic market feed.
+            </p>
           </div>
+
           <div class="topbar-actions">
-            <a class="button ghost" href="/api/health">API Health</a>
-            <button class="button ghost" id="refresh-button" type="button">Refresh Data</button>
+            <button class="button" id="refresh-scan" type="button">Run desk scan</button>
+            <button class="button button-secondary" id="refresh-research" type="button">Refresh research</button>
+            <a class="button button-ghost" href="/api/health">API health</a>
           </div>
         </header>
 
         <section class="hero-grid">
-          <article class="card hero-card">
-            <p class="eyebrow"><span class="dot"></span> Bot status: paper mode</p>
-            <h2>Scanning. Ranking. Simulating.</h2>
-            <p class="hero-copy">
-              A Cloudflare-hosted paper-trading desk with strategy snapshots, category-aware signals, and Convex-backed history.
-            </p>
-            <div class="pill" data-pill>Live review snapshot</div>
+          <article class="hero-panel">
+            <div class="hero-metric">
+              <span class="metric-label">Desk thesis</span>
+              <h2>Inspired by specialized traders, not generic bots.</h2>
+              <p class="hero-note">
+                The scanner only ranks politics, macro, and awards markets, then matches them with current research briefs and clear risk framing.
+              </p>
+            </div>
+            <div class="hero-summary">
+              <div>
+                <span class="metric-label">Snapshot</span>
+                <p class="summary-value" data-updated-inline>—</p>
+              </div>
+              <div>
+                <span class="metric-label">Research</span>
+                <p class="summary-value" data-research-updated>—</p>
+              </div>
+            </div>
           </article>
 
-          <article class="card stat-card">
-            <p class="stat-label">Highest edge right now</p>
-            <p class="stat-value" data-best-edge>7.27%</p>
-            <p class="stat-caption">Average across current qualified signals</p>
-            <div class="stat-divider"></div>
-            <p class="stat-label">Suggested max position</p>
-            <p class="stat-value" data-max-position>$25.00</p>
+          <article class="status-panel">
+            <div class="status-row">
+              <span class="metric-label">Highest edge</span>
+              <strong data-best-edge>0.00%</strong>
+            </div>
+            <div class="status-row">
+              <span class="metric-label">Average edge</span>
+              <strong data-average-edge>0.00%</strong>
+            </div>
+            <div class="status-row">
+              <span class="metric-label">Max size</span>
+              <strong data-max-position>$0.00</strong>
+            </div>
+            <div class="status-row">
+              <span class="metric-label">Threshold</span>
+              <strong data-threshold>7.00%</strong>
+            </div>
           </article>
         </section>
 
-        <div class="banner">
-          <span id="banner-text">Loading snapshot source...</span>
-        </div>
-
-        <section class="kpi-grid">
-          <article class="card kpi">
-            <p class="kpi-label">Tradeable markets</p>
-            <p class="kpi-value" data-market-count>3</p>
-            <p class="kpi-note">Markets passing top-level liquidity filters.</p>
+        <section class="kpi-row">
+          <article class="kpi-card">
+            <p class="metric-label">Signals now</p>
+            <p class="kpi-value" data-signal-count>0</p>
           </article>
-          <article class="card kpi">
-            <p class="kpi-label">Signals now</p>
-            <p class="kpi-value" data-signal-count>3</p>
-            <p class="kpi-note">Qualified opportunities after strategy filtering.</p>
+          <article class="kpi-card">
+            <p class="metric-label">Markets tracked</p>
+            <p class="kpi-value" data-market-count>0</p>
           </article>
-          <article class="card kpi">
-            <p class="kpi-label">Average edge</p>
-            <p class="kpi-value" data-average-edge>7.27%</p>
-            <p class="kpi-note">Mean edge across the current qualified review set.</p>
+          <article class="kpi-card">
+            <p class="metric-label">Confidence</p>
+            <p class="kpi-value" data-confidence>0/99</p>
           </article>
-          <article class="card kpi">
-            <p class="kpi-label">Confidence</p>
-            <p class="kpi-value" data-confidence>73/99</p>
-            <p class="kpi-note">Derived from the signal ranking model.</p>
+          <article class="kpi-card">
+            <p class="metric-label">Paper balance</p>
+            <p class="kpi-value" data-balance>$0.00</p>
           </article>
         </section>
 
-        <section class="card table-card" id="signals">
-          <div class="section-head">
-            <h3>Top Active Signals</h3>
-            <p>Category-tagged paper signals from the latest live or fallback snapshot.</p>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Market</th>
-                  <th>Category</th>
-                  <th>Strategy</th>
-                  <th>Direction</th>
-                  <th>Edge</th>
-                  <th>Confidence</th>
-                  <th>Entry</th>
-                  <th>Size (USDC)</th>
-                  <th>Expiry</th>
-                  <th>Thesis</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody id="signals-table"></tbody>
-            </table>
-          </div>
+        <section class="workspace">
+          <section class="panel panel-wide" id="signals">
+            <div class="panel-head">
+              <div>
+                <p class="metric-label">Signal book</p>
+                <h3>Active ideas</h3>
+              </div>
+              <p class="panel-copy" id="banner-text">Loading current scan…</p>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Market</th>
+                    <th>Category</th>
+                    <th>Mode</th>
+                    <th>Side</th>
+                    <th>Edge</th>
+                    <th>Size</th>
+                    <th>Expiry</th>
+                    <th>Thesis</th>
+                  </tr>
+                </thead>
+                <tbody id="signals-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <aside class="panel panel-side" id="research">
+            <div class="panel-head">
+              <div>
+                <p class="metric-label">Exa research</p>
+                <h3>Research queue</h3>
+              </div>
+              <p class="panel-copy">Live category briefs with source links.</p>
+            </div>
+            <div id="research-feed" class="research-feed"></div>
+          </aside>
         </section>
 
         <section class="panel-grid">
-          <article class="card panel" id="scanner">
-            <div class="section-head">
-              <h3>Market Scanner</h3>
-              <p>Highest-volume markets from the latest review set.</p>
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="metric-label">Strategy board</p>
+                <h3>Category scorecards</h3>
+              </div>
+              <p class="panel-copy">What to watch before sizing paper risk.</p>
             </div>
-            <div id="scanner-list" class="stack"></div>
+            <div id="strategy-cards" class="strategy-grid"></div>
           </article>
 
-          <article class="card panel">
-            <div class="section-head">
-              <h3>Recent Activity</h3>
-              <p>Signals and status messages for the deploy preview.</p>
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="metric-label">Scanner context</p>
+                <h3>Markets in focus</h3>
+              </div>
+              <p class="panel-copy">High-liquidity focus markets from the latest run.</p>
             </div>
-            <div id="activity-list" class="stack"></div>
+            <div id="scanner-list" class="stack-list"></div>
           </article>
 
-          <article class="card panel" id="controls">
-            <div class="section-head">
-              <h3>Strategy Controls</h3>
-              <p>Review surface for the active paper-trading modes.</p>
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="metric-label">Run log</p>
+                <h3>Desk activity</h3>
+              </div>
+              <p class="panel-copy">Recent scanner and research messages.</p>
             </div>
-            <div class="controls">
-              <label>
-                <span>Mode</span>
-                <select>
-                  <option>Paper trading</option>
-                  <option>Live mode disabled</option>
-                </select>
-              </label>
-              <label>
-                <span>Primary strategy</span>
-                <select>
-                  <option>Consensus fade</option>
-                  <option>Event specialist</option>
-                  <option>Liquidity reversion</option>
-                </select>
-              </label>
-              <label>
-                <span>Risk per trade</span>
-                <input type="range" min="1" max="5" value="2" />
-              </label>
-              <label>
-                <span>Max open position</span>
-                <input type="range" min="5" max="100" value="25" />
-              </label>
-              <label>
-                <span>Edge threshold</span>
-                <input type="range" min="1" max="20" value="7" />
-              </label>
-              <button class="button" type="button" disabled>Save local view</button>
-            </div>
+            <div id="activity-list" class="stack-list"></div>
           </article>
         </section>
 
-        <section class="card table-card">
-          <div class="section-head">
-            <h3>Snapshot History</h3>
-            <p>Recent Worker scan runs persisted in Convex, with Cloudflare cache as fallback.</p>
+        <section class="panel" id="history">
+          <div class="panel-head">
+            <div>
+              <p class="metric-label">Convex history</p>
+              <h3>Recent runs</h3>
+            </div>
+            <p class="panel-copy">Snapshot history is persisted and replayable.</p>
           </div>
+
           <div class="table-wrap">
             <table>
               <thead>
@@ -215,10 +234,6 @@
             </table>
           </div>
         </section>
-
-        <footer class="footer-card">
-          Paper trading only. This Cloudflare deployment serves live snapshots when available, persists history to Convex, and falls back to cached/demo data if upstream fetches fail.
-        </footer>
       </main>
     </div>
 

@@ -19,4 +19,16 @@ export default defineSchema({
     pill: v.string(),
     payload: v.any(),
   }).index("by_createdAtTs", ["createdAtTs"]),
+  researchBriefs: defineTable({
+    category: v.string(),
+    strategy: v.string(),
+    conviction: v.string(),
+    impactScore: v.number(),
+    updatedAtTs: v.number(),
+    updatedAt: v.string(),
+    headline: v.string(),
+    payload: v.any(),
+  })
+    .index("by_updatedAtTs", ["updatedAtTs"])
+    .index("by_category", ["category", "updatedAtTs"]),
 });

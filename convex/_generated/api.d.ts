@@ -9,6 +9,7 @@
  */
 
 import type * as http from "../http.js";
+import type * as research from "../research.js";
 import type * as snapshots from "../snapshots.js";
 
 import type {
@@ -19,6 +20,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   http: typeof http;
+  research: typeof research;
   snapshots: typeof snapshots;
 }>;
 

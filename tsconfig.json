@@ -4,12 +4,12 @@
     "module": "ES2022",
     "moduleResolution": "Bundler",
     "strict": true,
-    "types": [
-      "@cloudflare/workers-types"
-    ],
+    "types": ["node"],
     "skipLibCheck": true
   },
   "include": [
-    "src/**/*.ts"
+    "worker-configuration.d.ts",
+    "src/**/*.ts",
+    "convex/**/*.ts"
   ]
 }

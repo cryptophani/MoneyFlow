@@ -19,6 +19,7 @@ An automated prediction market trading bot for Polymarket, built for signal gene
 - Writes a 12-hour P&L report automatically
 - Includes a Streamlit dashboard for local monitoring
 - Includes a static frontend preview that can be deployed directly from GitHub on Netlify
+- Includes a live Cloudflare Worker desk UI with Convex-backed run history and Exa-backed research briefs
 
 ---
 
@@ -32,6 +33,7 @@ An automated prediction market trading bot for Polymarket, built for signal gene
 - Static HTML/CSS/JS for GitHub-connected web deployment
 - Cloudflare Workers for API, hosting, cron scheduling, and fallback caching
 - Convex for snapshot persistence and history storage
+- Exa Answer API for category research briefs with citations
 
 ---
 
@@ -140,8 +142,10 @@ The Worker exposes:
 - `/api/snapshot`
 - `/api/history`
 - `/api/scan`
+- `/api/research`
+- `/api/research/refresh`
 
-Snapshot history is stored in Convex. Cloudflare KV and D1 remain as fallback cache/storage so the app can still serve the last successful snapshot if Convex or the upstream market APIs are temporarily unavailable.
+Snapshot history is stored in Convex. Exa research briefs are also persisted via Convex. Cloudflare KV and D1 remain as fallback cache/storage so the app can still serve the last successful snapshot if Convex or the upstream market APIs are temporarily unavailable.
 
 ---
 
@@ -155,6 +159,8 @@ Snapshot history is stored in Convex. Cloudflare KV and D1 remain as fallback ca
 - Safe to run with dummy Polymarket keys
 
 To switch to live trading, set `PAPER_TRADE=false` and add real wallet credentials.
+
+The deployed Cloudflare desk remains paper-only. It is designed for category-specialized scanning and research, not blind auto-execution.
 
 ---
 
