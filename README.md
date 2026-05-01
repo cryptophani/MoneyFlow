@@ -1,6 +1,6 @@
 # MoneyFlow — Polymarket Paper Trading Bot
 
-An automated prediction market trading bot for Polymarket, built for signal generation, edge calculation, and simulated paper trading with a local dashboard for inspection.
+An automated prediction market trading bot for Polymarket, built for signal generation, edge calculation, and simulated paper trading with both a local Python dashboard and a static web preview for GitHub/Netlify deployments.
 
 ---
 
@@ -15,6 +15,7 @@ An automated prediction market trading bot for Polymarket, built for signal gene
 - Tracks resolved bets and calculates real P&L
 - Writes a 12-hour P&L report automatically
 - Includes a Streamlit dashboard for local monitoring
+- Includes a static frontend preview that can be deployed directly from GitHub on Netlify
 
 ---
 
@@ -25,6 +26,7 @@ An automated prediction market trading bot for Polymarket, built for signal gene
 - Google Sheets API for logging
 - Gmail SMTP for alerts
 - Streamlit for the local dashboard UI
+- Static HTML/CSS/JS for GitHub-connected web deployment
 
 ---
 
@@ -88,6 +90,14 @@ python main.py
 streamlit run dashboard_app.py
 ```
 
+### 7. Launch the static web preview
+
+```bash
+python3 -m http.server 4173
+```
+
+Then open `http://localhost:4173`.
+
 ---
 
 ## Paper Trade Mode
@@ -135,6 +145,10 @@ MoneyFlow/
 ├── pnl_report.py        # 12-hour P&L reports
 ├── dashboard_app.py     # Streamlit dashboard
 ├── dashboard_data.py    # Dashboard snapshot builder
+├── index.html           # Static deployable dashboard
+├── styles.css           # Static dashboard styles
+├── app.js               # Static dashboard data + rendering
+├── netlify.toml         # Netlify publish configuration
 ├── config.py            # All settings from .env
 ├── requirements.txt     # Dependencies
 ├── .env.example         # Environment variable template
