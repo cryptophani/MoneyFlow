@@ -141,6 +141,20 @@ http.route({
   }),
 });
 
+http.route({
+  path: "/maintenance/dedupe-paper-bets",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const expectedSecret = process.env.WORKER_INGEST_SECRET;
+    if (!expectedSecret || request.headers.get("x-ingest-secret") !== expectedSecret) {
+      return json({ ok: false, error: "unauthorized" }, 401);
+    }
+
+    const result = await ctx.runMutation(api.paperBets.dedupeOpenPositions, {});
+    return json(result);
+  }),
+});
+
 export default http;
 
 function json(data: unknown, status = 200): Response {

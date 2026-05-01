@@ -29,7 +29,13 @@ export const ingestBatch = mutation({
   args: { bets: v.array(paperBet) },
   handler: async (ctx, args) => {
     let inserted = 0;
+    const open = await ctx.db.query("paperBets").withIndex("by_status", (q) => q.eq("status", "open")).collect();
     for (const bet of args.bets) {
+      const incomingKey = positionKeyFor(bet);
+      const existingOpen = open.find((row) => positionKeyFor(row) === incomingKey);
+      if (existingOpen) {
+        continue;
+      }
       const existing = await ctx.db
         .query("paperBets")
         .withIndex("by_betKey", (q) => q.eq("betKey", bet.betKey))
@@ -38,11 +44,37 @@ export const ingestBatch = mutation({
         continue;
       }
       await ctx.db.insert("paperBets", bet);
+      open.unshift({ ...bet, _id: `pending-${inserted}` as never, _creationTime: Date.now() } as never);
       inserted += 1;
     }
     return { ok: true, inserted };
   },
 });
+
+export const dedupeOpenPositions = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const open = await ctx.db.query("paperBets").withIndex("by_status", (q) => q.eq("status", "open")).order("desc").collect();
+    const seen = new Set<string>();
+    let removed = 0;
+
+    for (const bet of open) {
+      const key = positionKeyFor(bet);
+      if (!seen.has(key)) {
+        seen.add(key);
+        continue;
+      }
+      await ctx.db.delete(bet._id);
+      removed += 1;
+    }
+
+    return { ok: true, removed };
+  },
+});
+
+function positionKeyFor(bet: { conditionId: string; side: string; strategy: string }): string {
+  return `${bet.conditionId}:${bet.side}:${bet.strategy}`;
+}
 
 export const resolveBatch = mutation({
   args: {

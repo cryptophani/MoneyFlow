@@ -138,6 +138,13 @@ const fallbackResults = {
   open: [],
 };
 
+const fallbackSourcePreview = {
+  title: "Source preview unavailable",
+  host: "moneyflow-desk.everyai-com.workers.dev",
+  description: "Select a citation from the research queue to inspect the linked source directly.",
+  excerpt: "",
+};
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -279,9 +286,14 @@ function renderResearch(research) {
           ${(brief.citations ?? [])
             .map(
               (citation) => `
-              <a href="${escapeHtml(citation.url)}" target="_blank" rel="noreferrer">
+              <button
+                type="button"
+                class="citation-button"
+                data-source-url="${escapeHtml(citation.url)}"
+                data-source-label="${escapeHtml(citation.source)}"
+              >
                 ${escapeHtml(citation.source)}
-              </a>
+              </button>
             `
             )
             .join("")}
@@ -290,6 +302,15 @@ function renderResearch(research) {
     `
     )
     .join("");
+
+  document.querySelectorAll("[data-source-url]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const url = button.getAttribute("data-source-url");
+      const label = button.getAttribute("data-source-label") ?? "source";
+      if (!url) return;
+      await loadSourcePreview(url, label);
+    });
+  });
 
   strategyCards.innerHTML = briefs
     .map(
@@ -367,6 +388,58 @@ function renderResults(results) {
     .join("");
 }
 
+function renderSourcePreview(preview, label) {
+  const statusNode = document.querySelector("[data-source-status]");
+  if (statusNode) {
+    statusNode.textContent = label ? `Inspecting ${label}` : "Source preview loaded";
+  }
+
+  const container = document.getElementById("source-preview");
+  if (!container) return;
+
+  container.classList.remove("empty-state");
+  container.innerHTML = `
+    <div class="source-preview-head">
+      <p class="metric-label">${escapeHtml(preview.host ?? fallbackSourcePreview.host)}</p>
+      <a href="${escapeHtml(preview.url ?? "#")}" target="_blank" rel="noreferrer">Open source</a>
+    </div>
+    <h4>${escapeHtml(preview.title ?? fallbackSourcePreview.title)}</h4>
+    <p class="source-preview-copy">${escapeHtml(preview.description ?? fallbackSourcePreview.description)}</p>
+    ${
+      preview.publishedAt
+        ? `<p class="source-preview-meta">Published ${escapeHtml(preview.publishedAt)}</p>`
+        : ""
+    }
+    ${
+      preview.excerpt
+        ? `<p class="source-preview-excerpt">${escapeHtml(preview.excerpt)}</p>`
+        : ""
+    }
+  `;
+}
+
+async function loadSourcePreview(url, label) {
+  const statusNode = document.querySelector("[data-source-status]");
+  if (statusNode) {
+    statusNode.textContent = `Loading ${label}…`;
+  }
+
+  try {
+    const preview = await fetchJson(`/api/source-preview?url=${encodeURIComponent(url)}`);
+    renderSourcePreview(preview, label);
+  } catch {
+    renderSourcePreview(
+      {
+        ...fallbackSourcePreview,
+        url,
+        host: label,
+        description: "The linked page could not be previewed from the Worker, but the direct link is still available.",
+      },
+      label,
+    );
+  }
+}
+
 async function fetchJson(url) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -424,4 +497,5 @@ renderSnapshot(fallbackSnapshot);
 renderResearch(fallbackResearch);
 renderHistory([]);
 renderResults(fallbackResults);
+renderSourcePreview({ ...fallbackSourcePreview, url: "#" });
 loadAll();

@@ -72,6 +72,15 @@ type ResearchCitation = {
   publishedDate?: string;
 };
 
+type SourcePreview = {
+  url: string;
+  host: string;
+  title: string;
+  description: string;
+  excerpt: string;
+  publishedAt?: string;
+};
+
 type ResearchBrief = {
   category: MarketCategory;
   strategy: StrategyMode;
@@ -227,6 +236,22 @@ export default {
     if (url.pathname === "/api/history") {
       const history = await getHistory(env);
       return json({ history });
+    }
+
+    if (url.pathname === "/api/source-preview") {
+      const target = url.searchParams.get("url");
+      if (!target) {
+        return json({ error: "url query parameter is required" }, { status: 400 });
+      }
+      try {
+        const preview = await fetchSourcePreview(target);
+        return json(preview);
+      } catch (error) {
+        return json(
+          { error: error instanceof Error ? error.message : "Failed to fetch source preview" },
+          { status: 502 },
+        );
+      }
     }
 
     if (url.pathname === "/api/results") {
@@ -483,7 +508,9 @@ async function fetchResearchBrief(
       publishedDate: item.publishedDate,
     }));
   const citations = rawCitations
-    .filter((item) => !["polymarket.com", "kalshi.com"].includes(item.source))
+    .filter((item) => !/(^|\.)polymarket\.com$/.test(item.source))
+    .filter((item) => !/(^|\.)kalshi\.com$/.test(item.source))
+    .filter((item) => !/(^|\.)predictit\.org$/.test(item.source))
     .slice(0, 3);
   const finalCitations = (citations.length ? citations : rawCitations.slice(0, 3))
     .map((item) => ({
@@ -523,12 +550,7 @@ async function fetchActiveMarkets(env: WorkerEnv, limit: number): Promise<Market
     order: "volume",
     ascending: "false",
   });
-  const response = await fetch(`${GAMMA_URL}/markets?${params.toString()}`);
-  if (!response.ok) {
-    throw new Error(`Gamma market fetch failed: ${response.status}`);
-  }
-
-  const raw = (await response.json()) as Array<Record<string, unknown>>;
+  const raw = (await fetchJsonCached(`${GAMMA_URL}/markets?${params.toString()}`, 90)) as Array<Record<string, unknown>>;
   const minVolume = Number.parseFloat(env.MIN_VOLUME);
   const minLiquidity = Number.parseFloat(env.MIN_LIQUIDITY);
 
@@ -573,7 +595,7 @@ async function fetchActiveMarkets(env: WorkerEnv, limit: number): Promise<Market
 }
 
 async function fetchOrderBookFeatures(tokenId: string): Promise<{ imbalance: number; liquidity: number; spread: number }> {
-  const response = await fetch(`${CLOB_URL}/book?token_id=${encodeURIComponent(tokenId)}`);
+  const response = await fetchCached(`${CLOB_URL}/book?token_id=${encodeURIComponent(tokenId)}`, 20);
   if (!response.ok) {
     return { imbalance: 0, liquidity: 0, spread: 0 };
   }
@@ -787,7 +809,7 @@ async function fetchMarketResolution(
 
   for (const endpoint of endpoints) {
     try {
-      const response = await fetch(endpoint);
+      const response = await fetchCached(endpoint, 120);
       if (!response.ok) {
         continue;
       }
@@ -823,6 +845,32 @@ async function fetchMarketResolution(
   }
 
   return null;
+}
+
+async function fetchSourcePreview(url: string): Promise<SourcePreview> {
+  assertPreviewUrl(url);
+  const response = await fetchCached(url, 60 * 30, {
+    headers: {
+      accept: "text/html,application/xhtml+xml",
+      "accept-language": "en-US,en;q=0.9",
+      "user-agent": "MoneyFlowDesk/1.0 (+https://moneyflow-desk.everyai-com.workers.dev)",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch source preview: ${response.status}`);
+  }
+  const html = await response.text();
+  return {
+    url,
+    host: sourceHost(url),
+    title: extractTagContent(html, "title") ?? sourceHost(url),
+    description: extractMetaContent(html, "description") ?? extractMetaProperty(html, "og:description") ?? "",
+    excerpt: extractBodyExcerpt(html),
+    publishedAt:
+      extractMetaProperty(html, "article:published_time") ??
+      extractMetaProperty(html, "og:updated_time") ??
+      undefined,
+  };
 }
 
 function computePaperPnl(bet: PaperBet, result: 0 | 1): number {
@@ -990,6 +1038,13 @@ async function persistPaperBetsFromSnapshot(env: WorkerEnv, snapshot: Snapshot):
       "x-ingest-secret": env.CONVEX_INGEST_SECRET,
     },
     body: JSON.stringify({ bets }),
+  });
+  await fetch(`${env.CONVEX_SITE_URL}/maintenance/dedupe-paper-bets`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-ingest-secret": env.CONVEX_INGEST_SECRET,
+    },
   });
   await env.SNAPSHOT_CACHE.delete(RESULTS_CACHE_KEY);
 }
@@ -1406,6 +1461,95 @@ function round(value: number, precision: number): number {
 
 async function cacheJson(store: KVNamespace, key: string, payload: unknown, ttlSeconds: number): Promise<void> {
   await store.put(key, JSON.stringify(payload), { expirationTtl: ttlSeconds });
+}
+
+async function fetchJsonCached(url: string, ttlSeconds: number, init?: RequestInit): Promise<unknown> {
+  const response = await fetchCached(url, ttlSeconds, init);
+  if (!response.ok) {
+    throw new Error(`Upstream request failed: ${response.status} for ${url}`);
+  }
+  return response.json();
+}
+
+async function fetchCached(url: string, ttlSeconds: number, init?: RequestInit): Promise<Response> {
+  const requestInit: RequestInit = { ...init, method: init?.method ?? "GET" };
+  const request = new Request(url, requestInit);
+  const useCache = request.method === "GET";
+  const edgeCache = (caches as CacheStorage & { default?: Cache }).default;
+
+  if (useCache && edgeCache) {
+    const cached = await edgeCache.match(request);
+    if (cached) {
+      return cached;
+    }
+  }
+
+  const response = await fetch(request, {
+    cf: {
+      cacheEverything: useCache,
+      cacheTtl: ttlSeconds,
+    },
+  });
+
+  if (useCache && response.ok && edgeCache) {
+    void edgeCache.put(request, response.clone());
+  }
+
+  return response;
+}
+
+function assertPreviewUrl(value: string): void {
+  const parsed = new URL(value);
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("Only http and https URLs are supported");
+  }
+}
+
+function extractTagContent(html: string, tag: string): string | null {
+  const match = html.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  return match?.[1] ? normalizeHtmlText(match[1]) : null;
+}
+
+function extractMetaContent(html: string, name: string): string | null {
+  const pattern = new RegExp(`<meta[^>]+name=["']${escapeRegex(name)}["'][^>]+content=["']([^"']+)["'][^>]*>`, "i");
+  const reversePattern = new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+name=["']${escapeRegex(name)}["'][^>]*>`, "i");
+  const match = html.match(pattern) ?? html.match(reversePattern);
+  return match?.[1] ? normalizeHtmlText(match[1]) : null;
+}
+
+function extractMetaProperty(html: string, property: string): string | null {
+  const pattern = new RegExp(`<meta[^>]+property=["']${escapeRegex(property)}["'][^>]+content=["']([^"']+)["'][^>]*>`, "i");
+  const reversePattern = new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${escapeRegex(property)}["'][^>]*>`, "i");
+  const match = html.match(pattern) ?? html.match(reversePattern);
+  return match?.[1] ? normalizeHtmlText(match[1]) : null;
+}
+
+function extractBodyExcerpt(html: string): string {
+  const body = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] ?? html;
+  const cleaned = normalizeHtmlText(
+    body
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+      .replace(/<[^>]+>/g, " "),
+  );
+  return cleaned.slice(0, 320);
+}
+
+function normalizeHtmlText(value: string): string {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function json(data: unknown, init?: ResponseInit): Response {
