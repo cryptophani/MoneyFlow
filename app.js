@@ -22,19 +22,25 @@ const fallbackSnapshot = {
       size_usdc: 25,
       expiry: "Aug 20, 2026",
       status: "Demo",
+      category: "macro",
+      strategy: "consensus-fade",
+      rationale: "macro setup | consensus-fade bias | seeded review data",
     },
     {
-      market: "Will ETH ETF flows stay positive this week?",
+      market: "Will Cannes Palme d'Or go to a first-time winner?",
       side: "NO",
       edge: 0.071,
       confidence: 71,
       entry_price: 0.621,
       size_usdc: 18.5,
-      expiry: "May 08, 2026",
+      expiry: "May 18, 2026",
       status: "Demo",
+      category: "awards",
+      strategy: "consensus-fade",
+      rationale: "awards setup | consensus-fade bias | seeded review data",
     },
     {
-      market: "Will CPI print below consensus next release?",
+      market: "Will the Celtics reach the NBA Finals?",
       side: "YES",
       edge: 0.063,
       confidence: 63,
@@ -42,23 +48,26 @@ const fallbackSnapshot = {
       size_usdc: 14,
       expiry: "May 14, 2026",
       status: "Demo",
+      category: "sports",
+      strategy: "event-specialist",
+      rationale: "sports setup | event-specialist bias | seeded review data",
     },
   ],
   markets: [
-    { title: "Will the Fed cut rates before September?", volume: "$240,000", yes: "YES 0.53" },
-    { title: "Will ETH ETF flows stay positive this week?", volume: "$175,000", yes: "YES 0.38" },
-    { title: "Will CPI print below consensus next release?", volume: "$132,000", yes: "YES 0.52" },
+    { title: "Will the Fed cut rates before September?", volume: "$240,000", yes: "YES 0.53", category: "macro" },
+    { title: "Will Cannes Palme d'Or go to a first-time winner?", volume: "$175,000", yes: "YES 0.38", category: "awards" },
+    { title: "Will the Celtics reach the NBA Finals?", volume: "$132,000", yes: "YES 0.52", category: "sports" },
   ],
   activity: [
     {
       time: "09:09 UTC",
       title: "Fallback data loaded",
-      detail: "The frontend is operational even before the Worker API is deployed.",
+      detail: "The frontend is operational even before the live Convex-backed API responds.",
     },
     {
       time: "09:09 UTC",
-      title: "Cloudflare API pending",
-      detail: "Deploy the Worker to start serving live snapshots from /api/snapshot.",
+      title: "Convex persistence pending",
+      detail: "Once the Worker ingests successfully, snapshot history persists beyond local cache.",
     },
   ],
 };
@@ -91,10 +100,10 @@ function renderSnapshot(snapshot) {
   const banner = document.getElementById("banner-text");
   if (banner) {
     banner.textContent = snapshot.demoMode
-      ? "Worker is serving demo or fallback data. Deploy and enable scheduled scans for live snapshots."
+      ? "Worker is serving demo or fallback data. Convex storage stays available once live scans succeed."
       : snapshot.stale
-        ? "Serving the last successful stored snapshot. A fresh live scan was not available."
-        : `Cloudflare Worker is serving ${snapshot.source} snapshot data from the live scan pipeline.`;
+        ? "Serving the last successful stored snapshot from Convex or fallback cache. A fresh live scan was not available."
+        : `Cloudflare Worker is serving ${snapshot.source} snapshot data with Convex-backed history.`;
   }
 
   const signalsTable = document.getElementById("signals-table");
@@ -103,12 +112,15 @@ function renderSnapshot(snapshot) {
       (signal) => `
       <tr>
         <td>${signal.market}</td>
+        <td>${signal.category ?? "other"}</td>
+        <td>${signal.strategy ?? "scanner"}</td>
         <td class="${signal.side === "YES" ? "direction-yes" : "direction-no"}">${signal.side}</td>
         <td>${percent(signal.edge)}</td>
         <td>${signal.confidence}</td>
         <td>${Number(signal.entry_price).toFixed(3)}</td>
         <td>${money(signal.size_usdc)}</td>
         <td>${signal.expiry}</td>
+        <td>${signal.rationale ?? "n/a"}</td>
         <td><span class="status ${String(signal.status).toLowerCase()}">${signal.status}</span></td>
       </tr>
     `
@@ -122,7 +134,7 @@ function renderSnapshot(snapshot) {
       <div class="stack-item">
         <p class="stack-title">${market.title}</p>
         <p class="stack-meta">${market.volume}</p>
-        <p class="stack-detail">${market.yes}</p>
+        <p class="stack-detail">${market.yes} · ${market.category ?? "other"}</p>
       </div>
     `
     )

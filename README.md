@@ -30,7 +30,8 @@ An automated prediction market trading bot for Polymarket, built for signal gene
 - Gmail SMTP for alerts
 - Streamlit for the local dashboard UI
 - Static HTML/CSS/JS for GitHub-connected web deployment
-- Cloudflare Workers for API, hosting, cron scheduling, KV caching, and D1 persistence
+- Cloudflare Workers for API, hosting, cron scheduling, and fallback caching
+- Convex for snapshot persistence and history storage
 
 ---
 
@@ -102,7 +103,22 @@ python3 -m http.server 4173
 
 Then open `http://localhost:4173`.
 
-### 8. Run the Cloudflare Worker locally
+### 8. Deploy Convex backend
+
+Use a Convex deploy key for the target deployment:
+
+```bash
+export CONVEX_DEPLOY_KEY='dev:your-deployment|your-key'
+npx convex deploy
+```
+
+Set the ingest secret used by the Worker:
+
+```bash
+npx convex env set WORKER_INGEST_SECRET 'your-random-secret'
+```
+
+### 9. Run the Cloudflare Worker locally
 
 ```bash
 npm install
@@ -111,9 +127,10 @@ npx wrangler dev --port 8787
 
 Then open `http://localhost:8787`.
 
-### 9. Deploy to Cloudflare
+### 10. Deploy to Cloudflare
 
 ```bash
+printf '%s' 'your-random-secret' | npx wrangler secret put CONVEX_INGEST_SECRET
 npx wrangler deploy
 ```
 
@@ -123,6 +140,8 @@ The Worker exposes:
 - `/api/snapshot`
 - `/api/history`
 - `/api/scan`
+
+Snapshot history is stored in Convex. Cloudflare KV and D1 remain as fallback cache/storage so the app can still serve the last successful snapshot if Convex or the upstream market APIs are temporarily unavailable.
 
 ---
 
@@ -177,6 +196,7 @@ MoneyFlow/
 ├── netlify.toml         # Netlify publish configuration
 ├── public/              # Cloudflare Worker asset directory
 ├── src/index.ts         # Cloudflare Worker API + cron logic
+├── convex/              # Convex schema, queries, mutations, and HTTP actions
 ├── schema.sql           # D1 schema
 ├── wrangler.jsonc       # Cloudflare Worker config
 ├── config.py            # All settings from .env

@@ -28,6 +28,8 @@
     }
   ],
   "vars": {
+    "CONVEX_CLOUD_URL": "https://frugal-cod-216.convex.cloud",
+    "CONVEX_SITE_URL": "https://frugal-cod-216.convex.site",
     "MIN_VOLUME": "50000",
     "MIN_LIQUIDITY": "5000",
     "KELLY_FRACTION": "0.25",

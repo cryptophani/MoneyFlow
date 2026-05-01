@@ -1,3 +1,6 @@
+type MarketCategory = "politics" | "macro" | "awards" | "sports" | "crypto" | "other";
+type StrategyMode = "consensus-fade" | "event-specialist" | "liquidity-reversion";
+
 type Market = {
   condition_id: string;
   question: string;
@@ -27,6 +30,9 @@ type Signal = {
   liquidity: number;
   imbalance: number;
   spread: number;
+  category: MarketCategory;
+  strategy: StrategyMode;
+  rationale: string;
 };
 
 type Snapshot = {
@@ -44,14 +50,26 @@ type Snapshot = {
   demoMode: boolean;
   stale: boolean;
   signals: Signal[];
-  markets: Array<{ title: string; volume: string; yes: string }>;
+  markets: Array<{ title: string; volume: string; yes: string; category: string }>;
   activity: Array<{ time: string; title: string; detail: string }>;
+};
+
+type SnapshotHistoryItem = {
+  id?: number | string;
+  createdAt: string;
+  source: string;
+  demoMode: boolean;
+  signalCount: number;
+  marketCount: number;
 };
 
 interface Env {
   ASSETS: Fetcher;
   SNAPSHOT_CACHE: KVNamespace;
   DB: D1Database;
+  CONVEX_CLOUD_URL: string;
+  CONVEX_SITE_URL: string;
+  CONVEX_INGEST_SECRET?: string;
   MIN_VOLUME: string;
   MIN_LIQUIDITY: string;
   KELLY_FRACTION: string;
@@ -62,13 +80,20 @@ interface Env {
 
 const GAMMA_URL = "https://gamma-api.polymarket.com";
 const CLOB_URL = "https://clob.polymarket.com";
+const CACHE_TTL_SECONDS = 60 * 30;
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === "/api/health") {
-      return json({ ok: true, service: "moneyflow-worker" });
+      const storage = await getStorageHealth(env);
+      return json({
+        ok: true,
+        service: "moneyflow-worker",
+        timestamp: new Date().toISOString(),
+        storage,
+      });
     }
 
     if (url.pathname === "/api/history") {
@@ -89,21 +114,46 @@ export default {
     return env.ASSETS.fetch(request);
   },
 
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     await refreshSnapshot(env);
   },
 };
 
+async function getStorageHealth(env: Env): Promise<Record<string, unknown>> {
+  const convexReachable = await convexHealth(env);
+  return {
+    convex: {
+      configured: Boolean(env.CONVEX_SITE_URL && env.CONVEX_CLOUD_URL),
+      reachable: convexReachable,
+      siteUrl: env.CONVEX_SITE_URL,
+      cloudUrl: env.CONVEX_CLOUD_URL,
+    },
+    cache: { kv: true, d1Fallback: true },
+  };
+}
+
 async function getSnapshot(env: Env): Promise<Snapshot> {
   await ensureSchema(env);
+
   const cached = await env.SNAPSHOT_CACHE.get("latest", "json");
   if (cached) {
-    return { ...(cached as Snapshot), source: "cache", stale: false };
+    return cached as Snapshot;
+  }
+
+  const convexSnapshot = await getLatestConvexSnapshot(env);
+  if (convexSnapshot) {
+    await cacheSnapshot(env, convexSnapshot);
+    return convexSnapshot;
   }
 
   const stored = await getLatestStoredSnapshot(env);
   if (stored) {
-    return { ...stored, source: "cache", stale: true };
+    return {
+      ...stored,
+      source: stored.source === "live" ? "cache" : stored.source,
+      stale: true,
+      pill: "Serving last successful fallback snapshot",
+    };
   }
 
   return refreshSnapshot(env);
@@ -115,16 +165,19 @@ async function refreshSnapshot(env: Env): Promise<Snapshot> {
     const snapshot = await collectLiveSnapshot(env);
     await persistSnapshot(env, snapshot);
     return snapshot;
-  } catch (error) {
-    const stored = await getLatestStoredSnapshot(env);
+  } catch {
+    const stored = await getLatestConvexSnapshot(env) ?? (await getLatestStoredSnapshot(env));
     if (stored) {
-      return {
+      const fallback = {
         ...stored,
-        source: "cache",
+        source: stored.source === "live" ? "cache" : stored.source,
         stale: true,
-        pill: "Serving last successful snapshot",
-      };
+        pill: "Serving last successful snapshot while live scan recovers",
+      } satisfies Snapshot;
+      await cacheSnapshot(env, fallback);
+      return fallback;
     }
+
     const snapshot = demoSnapshot("Live scan failed. Serving seeded review data.");
     await persistSnapshot(env, snapshot);
     return snapshot;
@@ -168,7 +221,7 @@ async function collectLiveSnapshot(env: Env): Promise<Snapshot> {
     marketCount: markets.length,
     confidence: `${avgConfidence}/99`,
     maxPosition: usd(maxPosition),
-    pill: "Live Cloudflare snapshot",
+    pill: "Live snapshot with Convex-backed history",
     source: "live",
     demoMode: false,
     stale: false,
@@ -177,6 +230,7 @@ async function collectLiveSnapshot(env: Env): Promise<Snapshot> {
       title: market.question,
       volume: usd(market.volume),
       yes: `YES ${market.yes_price.toFixed(2)}`,
+      category: classifyCategory(market.question),
     })),
     activity: buildActivity(signals, now, false),
   };
@@ -271,7 +325,10 @@ function generateSignal(
   env: Env,
 ): Signal | null {
   const question = market.question.toLowerCase();
-  if (["bitcoin", "btc", "solana", "eth", "temperature", "weather", "hit", "reach", "price"].some((word) => question.includes(word))) {
+  const category = classifyCategory(market.question);
+  const strategy = chooseStrategy(category, ob.imbalance);
+
+  if (category === "crypto" || ["temperature", "weather", "hit", "reach", "price"].some((word) => question.includes(word))) {
     return null;
   }
 
@@ -279,7 +336,7 @@ function generateSignal(
   if (expiryRaw) {
     const expiry = new Date(expiryRaw);
     const daysLeft = (expiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
-    if (daysLeft > 7) {
+    if (daysLeft > 10) {
       return null;
     }
   }
@@ -292,19 +349,16 @@ function generateSignal(
     return null;
   }
 
-  if (market.yes_price > 0.9 || market.yes_price < 0.1) {
-    return null;
-  }
-
-  const signalOb = ob.imbalance * 0.03;
-  const signalPrice = (0.5 - market.yes_price) * 0.2;
-  const modelProb = clamp(market.yes_price + signalOb + signalPrice, 0.05, 0.95);
+  const strategyBias = strategy === "consensus-fade" ? (0.5 - market.yes_price) * 0.28 : strategy === "event-specialist" ? (0.5 - market.yes_price) * 0.18 : (0.5 - market.yes_price) * 0.1;
+  const orderBookBias = ob.imbalance * (strategy === "liquidity-reversion" ? 0.05 : 0.03);
+  const spreadPenalty = ob.spread * 0.2;
+  const modelProb = clamp(market.yes_price + strategyBias + orderBookBias - spreadPenalty, 0.05, 0.95);
   const yesEdge = modelProb - market.yes_price;
   const noEdge = (1 - modelProb) - market.no_price;
   const edge = Math.max(yesEdge, noEdge);
   const threshold = Number.parseFloat(env.EDGE_THRESHOLD);
 
-  if (edge < threshold || edge > 0.15) {
+  if (edge < threshold || edge > 0.18) {
     return null;
   }
 
@@ -328,6 +382,9 @@ function generateSignal(
     liquidity: market.liquidity,
     imbalance: round(ob.imbalance, 4),
     spread: round(ob.spread, 4),
+    category,
+    strategy,
+    rationale: describeRationale(category, strategy, market, ob, edge),
   };
 }
 
@@ -355,12 +412,57 @@ function computeKellySize(modelProb: number, marketPrice: number, side: "YES" | 
 
 async function persistSnapshot(env: Env, snapshot: Snapshot): Promise<void> {
   await ensureSchema(env);
-  await env.SNAPSHOT_CACHE.put("latest", JSON.stringify(snapshot), { expirationTtl: 60 * 30 });
+  await cacheSnapshot(env, snapshot);
+  await persistD1Snapshot(env, snapshot);
+  await persistConvexSnapshot(env, snapshot);
+}
+
+async function cacheSnapshot(env: Env, snapshot: Snapshot): Promise<void> {
+  await env.SNAPSHOT_CACHE.put("latest", JSON.stringify(snapshot), { expirationTtl: CACHE_TTL_SECONDS });
+}
+
+async function persistD1Snapshot(env: Env, snapshot: Snapshot): Promise<void> {
   await env.DB.prepare(
     "INSERT INTO snapshots (created_at, source, demo_mode, signal_count, market_count, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
   )
     .bind(snapshot.updatedAt, snapshot.source, snapshot.demoMode ? 1 : 0, snapshot.signalCount, snapshot.marketCount, JSON.stringify(snapshot))
     .run();
+}
+
+async function persistConvexSnapshot(env: Env, snapshot: Snapshot): Promise<void> {
+  if (!env.CONVEX_SITE_URL || !env.CONVEX_INGEST_SECRET) {
+    return;
+  }
+
+  const response = await fetch(`${env.CONVEX_SITE_URL}/ingest/snapshot`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-ingest-secret": env.CONVEX_INGEST_SECRET,
+    },
+    body: JSON.stringify(snapshot),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Convex snapshot persist failed: ${response.status}`);
+  }
+}
+
+async function getLatestConvexSnapshot(env: Env): Promise<Snapshot | null> {
+  if (!env.CONVEX_SITE_URL) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(`${env.CONVEX_SITE_URL}/snapshot`);
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as { snapshot?: Snapshot | null };
+    return payload.snapshot ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function getLatestStoredSnapshot(env: Env): Promise<Snapshot | null> {
@@ -369,7 +471,12 @@ async function getLatestStoredSnapshot(env: Env): Promise<Snapshot | null> {
   return row ? (JSON.parse(row.payload) as Snapshot) : null;
 }
 
-async function getHistory(env: Env): Promise<Array<Record<string, unknown>>> {
+async function getHistory(env: Env): Promise<SnapshotHistoryItem[]> {
+  const convexHistory = await getConvexHistory(env);
+  if (convexHistory.length) {
+    return convexHistory;
+  }
+
   await ensureSchema(env);
   const rows = await env.DB.prepare(
     "SELECT id, created_at, source, demo_mode, signal_count, market_count FROM snapshots ORDER BY id DESC LIMIT 10",
@@ -392,6 +499,40 @@ async function getHistory(env: Env): Promise<Array<Record<string, unknown>>> {
   }));
 }
 
+async function getConvexHistory(env: Env): Promise<SnapshotHistoryItem[]> {
+  if (!env.CONVEX_SITE_URL) {
+    return [];
+  }
+
+  try {
+    const response = await fetch(`${env.CONVEX_SITE_URL}/history?limit=10`);
+    if (!response.ok) {
+      return [];
+    }
+    const payload = (await response.json()) as { history?: SnapshotHistoryItem[] };
+    return payload.history ?? [];
+  } catch {
+    return [];
+  }
+}
+
+async function convexHealth(env: Env): Promise<boolean> {
+  if (!env.CONVEX_SITE_URL) {
+    return false;
+  }
+
+  try {
+    const response = await fetch(`${env.CONVEX_SITE_URL}/health`);
+    if (!response.ok) {
+      return false;
+    }
+    const payload = (await response.json()) as { ok?: boolean };
+    return Boolean(payload.ok);
+  } catch {
+    return false;
+  }
+}
+
 async function ensureSchema(env: Env): Promise<void> {
   await env.DB.batch([
     env.DB.prepare(
@@ -399,6 +540,53 @@ async function ensureSchema(env: Env): Promise<void> {
     ),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots(created_at DESC)"),
   ]);
+}
+
+function classifyCategory(question: string): MarketCategory {
+  const value = question.toLowerCase();
+  if (/(election|president|senate|house|governor|minister|prime minister|nominee|vote|campaign)/.test(value)) {
+    return "politics";
+  }
+  if (/(fed|rate|cpi|inflation|gdp|recession|jobs|payroll|unemployment|treasury|tariff)/.test(value)) {
+    return "macro";
+  }
+  if (/(oscar|emmy|grammy|golden globe|award|festival|palme)/.test(value)) {
+    return "awards";
+  }
+  if (/(nba|nfl|mlb|nhl|wimbledon|open|cup|final|match|game|championship|playoff|team)/.test(value)) {
+    return "sports";
+  }
+  if (/(btc|bitcoin|eth|ethereum|sol|solana|crypto)/.test(value)) {
+    return "crypto";
+  }
+  return "other";
+}
+
+function chooseStrategy(category: MarketCategory, imbalance: number): StrategyMode {
+  if (category === "politics" || category === "macro" || category === "awards") {
+    return "consensus-fade";
+  }
+  if (category === "sports") {
+    return "event-specialist";
+  }
+  return Math.abs(imbalance) > 0.12 ? "liquidity-reversion" : "consensus-fade";
+}
+
+function describeRationale(
+  category: MarketCategory,
+  strategy: StrategyMode,
+  market: Market,
+  ob: { imbalance: number; liquidity: number; spread: number },
+  edge: number,
+): string {
+  return [
+    `${category} setup`,
+    `${strategy} bias`,
+    `edge ${pct(edge)}`,
+    `imbalance ${round(ob.imbalance, 3)}`,
+    `spread ${round(ob.spread, 3)}`,
+    `vol ${usd(market.volume)}`,
+  ].join(" | ");
 }
 
 function demoSnapshot(detail: string): Snapshot {
@@ -419,26 +607,32 @@ function demoSnapshot(detail: string): Snapshot {
       liquidity: 68000,
       imbalance: 0.312,
       spread: 0.012,
+      category: "macro",
+      strategy: "consensus-fade",
+      rationale: "macro setup | consensus-fade bias | seeded review data",
     },
     {
-      market: "Will ETH ETF flows stay positive this week?",
-      slug: "eth-etf-positive-week",
+      market: "Will Cannes Palme d'Or go to a first-time winner?",
+      slug: "cannes-palme-first-time-winner",
       side: "NO",
       edge: 0.071,
       model_prob: 0.433,
       entry_price: 0.621,
       size_usdc: 18.5,
-      expiry: "May 08, 2026",
+      expiry: "May 18, 2026",
       confidence: 71,
       status: "Demo",
       volume: 175000,
       liquidity: 42000,
       imbalance: -0.241,
       spread: 0.009,
+      category: "awards",
+      strategy: "consensus-fade",
+      rationale: "awards setup | consensus-fade bias | seeded review data",
     },
     {
-      market: "Will CPI print below consensus next release?",
-      slug: "cpi-below-consensus-next-release",
+      market: "Will the Celtics reach the NBA Finals?",
+      slug: "celtics-nba-finals",
       side: "YES",
       edge: 0.063,
       model_prob: 0.587,
@@ -451,6 +645,9 @@ function demoSnapshot(detail: string): Snapshot {
       liquidity: 35800,
       imbalance: 0.226,
       spread: 0.015,
+      category: "sports",
+      strategy: "event-specialist",
+      rationale: "sports setup | event-specialist bias | seeded review data",
     },
   ];
 
@@ -464,7 +661,7 @@ function demoSnapshot(detail: string): Snapshot {
     marketCount: 3,
     confidence: "73/99",
     maxPosition: "$25.00",
-    pill: "Cloudflare demo snapshot",
+    pill: "Convex + Cloudflare demo snapshot",
     source: "demo",
     demoMode: true,
     stale: false,
@@ -473,10 +670,11 @@ function demoSnapshot(detail: string): Snapshot {
       title: signal.market,
       volume: usd(signal.volume),
       yes: `YES ${signal.entry_price.toFixed(2)}`,
+      category: signal.category,
     })),
     activity: [
       { time: shortTime(new Date()), title: "Demo mode enabled", detail },
-      { time: shortTime(new Date()), title: "Static fallback active", detail: "Worker deploy is healthy, but live upstream data was unavailable." },
+      { time: shortTime(new Date()), title: "Convex persistence enabled", detail: "Snapshots and history are written to Convex and cached on Cloudflare." },
       { time: shortTime(new Date()), title: "Paper trading only", detail: "No live orders are placed from the Cloudflare deployment." },
     ],
   };
@@ -487,10 +685,18 @@ function buildActivity(signals: Signal[], now: Date, demoMode: boolean): Array<{
   const top = signals[0];
   return [
     top
-      ? { time, title: `Signal ready: ${top.side} ${top.slug}`, detail: `Edge ${top.edge.toFixed(3)} with ${usd(top.size_usdc)} suggested size.` }
+      ? {
+          time,
+          title: `Signal ready: ${top.side} ${top.slug}`,
+          detail: `${top.category} | ${top.strategy} | edge ${top.edge.toFixed(3)} | size ${usd(top.size_usdc)}.`,
+        }
       : { time, title: "No active signals", detail: "The latest scan did not return any opportunities above the edge threshold." },
-    { time, title: `Scanned ${signals.length} qualified opportunities`, detail: "Markets filtered by liquidity, pricing bands, and time to resolution." },
-    { time, title: demoMode ? "Demo mode active" : "Cloudflare cron enabled", detail: demoMode ? "Serving fallback data." : "Worker cron refreshes snapshots every 10 minutes UTC." },
+    { time, title: `Scanned ${signals.length} qualified opportunities`, detail: "Markets filtered by liquidity, pricing bands, time to resolution, and category heuristics." },
+    {
+      time,
+      title: demoMode ? "Demo mode active" : "Cloudflare cron enabled",
+      detail: demoMode ? "Serving fallback data." : "Worker cron refreshes snapshots every 10 minutes and persists them to Convex.",
+    },
   ];
 }
 
@@ -521,24 +727,23 @@ function pct(value: number): string {
 }
 
 function usd(value: number): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value);
-}
-
-function round(value: number, digits: number): number {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function round(value: number, precision: number): number {
+  const scale = 10 ** precision;
+  return Math.round(value * scale) / scale;
+}
+
 function json(data: unknown, init?: ResponseInit): Response {
-  return new Response(JSON.stringify(data), {
+  return new Response(JSON.stringify(data, null, 2), {
     ...init,
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
       ...(init?.headers ?? {}),
     },
   });

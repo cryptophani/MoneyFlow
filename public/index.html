@@ -49,7 +49,7 @@
             <p class="sidebar-value">120s</p>
           </div>
           <p class="sidebar-note">
-            Static deployment view. The local Python bot remains the source of live paper-trading execution.
+            Cloudflare serves the public UI and API. Convex now stores snapshot history behind the Worker.
           </p>
         </div>
       </aside>
@@ -71,9 +71,9 @@
             <p class="eyebrow"><span class="dot"></span> Bot status: paper mode</p>
             <h2>Scanning. Ranking. Simulating.</h2>
             <p class="hero-copy">
-              A Netlify-friendly dashboard for browsing the MoneyFlow strategy surface even when the Python bot is not running.
+              A Cloudflare-hosted paper-trading desk with strategy snapshots, category-aware signals, and Convex-backed history.
             </p>
-            <div class="pill" data-pill>Static deploy preview</div>
+            <div class="pill" data-pill>Live review snapshot</div>
           </article>
 
           <article class="card stat-card">
@@ -104,7 +104,7 @@
           <article class="card kpi">
             <p class="kpi-label">Average edge</p>
             <p class="kpi-value" data-average-edge>7.27%</p>
-            <p class="kpi-note">Mean edge across the current static review set.</p>
+            <p class="kpi-note">Mean edge across the current qualified review set.</p>
           </article>
           <article class="card kpi">
             <p class="kpi-label">Confidence</p>
@@ -116,19 +116,22 @@
         <section class="card table-card" id="signals">
           <div class="section-head">
             <h3>Top Active Signals</h3>
-            <p>Static deployment sample of the dashboard signal table.</p>
+            <p>Category-tagged paper signals from the latest live or fallback snapshot.</p>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>Market</th>
+                  <th>Category</th>
+                  <th>Strategy</th>
                   <th>Direction</th>
                   <th>Edge</th>
                   <th>Confidence</th>
                   <th>Entry</th>
                   <th>Size (USDC)</th>
                   <th>Expiry</th>
+                  <th>Thesis</th>
                   <th>Status</th>
                 </tr>
               </thead>
@@ -157,7 +160,7 @@
           <article class="card panel" id="controls">
             <div class="section-head">
               <h3>Strategy Controls</h3>
-              <p>Visual-only controls for the static deployment.</p>
+              <p>Review surface for the active paper-trading modes.</p>
             </div>
             <div class="controls">
               <label>
@@ -165,6 +168,14 @@
                 <select>
                   <option>Paper trading</option>
                   <option>Live mode disabled</option>
+                </select>
+              </label>
+              <label>
+                <span>Primary strategy</span>
+                <select>
+                  <option>Consensus fade</option>
+                  <option>Event specialist</option>
+                  <option>Liquidity reversion</option>
                 </select>
               </label>
               <label>
@@ -187,7 +198,7 @@
         <section class="card table-card">
           <div class="section-head">
             <h3>Snapshot History</h3>
-            <p>Recent Worker scan runs persisted in Cloudflare storage.</p>
+            <p>Recent Worker scan runs persisted in Convex, with Cloudflare cache as fallback.</p>
           </div>
           <div class="table-wrap">
             <table>
@@ -206,7 +217,7 @@
         </section>
 
         <footer class="footer-card">
-          Paper trading only. This Cloudflare deployment serves live API snapshots when available and demo data when upstream market fetches fail.
+          Paper trading only. This Cloudflare deployment serves live snapshots when available, persists history to Convex, and falls back to cached/demo data if upstream fetches fail.
         </footer>
       </main>
     </div>

@@ -7,11 +7,17 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "check": "wrangler check",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "convex:dev": "convex dev",
+    "convex:deploy": "convex deploy",
+    "convex:codegen": "convex codegen"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260501.0",
     "typescript": "^5.8.3",
     "wrangler": "^4.82.2"
+  },
+  "dependencies": {
+    "convex": "^1.37.0"
   }
 }
