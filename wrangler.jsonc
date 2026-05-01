@@ -1,0 +1,38 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "moneyflow-desk",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-01",
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "triggers": {
+    "crons": ["*/10 * * * *"]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "SNAPSHOT_CACHE",
+      "id": "b18cf679036a4185b80f37ed9154a581"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "moneyflow-db",
+      "database_id": "e14e31be-8125-433c-b7d9-0a2813c1419b"
+    }
+  ],
+  "vars": {
+    "MIN_VOLUME": "50000",
+    "MIN_LIQUIDITY": "5000",
+    "KELLY_FRACTION": "0.25",
+    "MAX_TRADE_USDC": "25",
+    "EDGE_THRESHOLD": "0.07",
+    "SNAPSHOT_LIMIT": "60"
+  }
+}

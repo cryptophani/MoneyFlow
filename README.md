@@ -1,6 +1,9 @@
 # MoneyFlow — Polymarket Paper Trading Bot
 
-An automated prediction market trading bot for Polymarket, built for signal generation, edge calculation, and simulated paper trading with both a local Python dashboard and a static web preview for GitHub/Netlify deployments.
+An automated prediction market trading bot for Polymarket, built for signal generation, edge calculation, and simulated paper trading with:
+- a local Python bot
+- a local Streamlit dashboard
+- a Cloudflare Worker deployment that serves a live snapshot API and scheduled refreshes
 
 ---
 
@@ -27,6 +30,7 @@ An automated prediction market trading bot for Polymarket, built for signal gene
 - Gmail SMTP for alerts
 - Streamlit for the local dashboard UI
 - Static HTML/CSS/JS for GitHub-connected web deployment
+- Cloudflare Workers for API, hosting, cron scheduling, KV caching, and D1 persistence
 
 ---
 
@@ -98,6 +102,28 @@ python3 -m http.server 4173
 
 Then open `http://localhost:4173`.
 
+### 8. Run the Cloudflare Worker locally
+
+```bash
+npm install
+npx wrangler dev --port 8787
+```
+
+Then open `http://localhost:8787`.
+
+### 9. Deploy to Cloudflare
+
+```bash
+npx wrangler deploy
+```
+
+The Worker exposes:
+
+- `/api/health`
+- `/api/snapshot`
+- `/api/history`
+- `/api/scan`
+
 ---
 
 ## Paper Trade Mode
@@ -147,8 +173,12 @@ MoneyFlow/
 ├── dashboard_data.py    # Dashboard snapshot builder
 ├── index.html           # Static deployable dashboard
 ├── styles.css           # Static dashboard styles
-├── app.js               # Static dashboard data + rendering
+├── app.js               # Frontend API fetch + rendering
 ├── netlify.toml         # Netlify publish configuration
+├── public/              # Cloudflare Worker asset directory
+├── src/index.ts         # Cloudflare Worker API + cron logic
+├── schema.sql           # D1 schema
+├── wrangler.jsonc       # Cloudflare Worker config
 ├── config.py            # All settings from .env
 ├── requirements.txt     # Dependencies
 ├── .env.example         # Environment variable template
