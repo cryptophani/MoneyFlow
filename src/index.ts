@@ -17,6 +17,7 @@ type Market = {
 };
 
 type Signal = {
+  condition_id: string;
   market: string;
   slug: string;
   side: "YES" | "NO";
@@ -95,6 +96,43 @@ type ResearchState = {
   briefs: ResearchBrief[];
 };
 
+type PaperBet = {
+  betKey: string;
+  conditionId: string;
+  slug: string;
+  market: string;
+  category: MarketCategory;
+  strategy: StrategyMode;
+  side: "YES" | "NO";
+  status: "open" | "resolved";
+  confidence: number;
+  edge: number;
+  modelProb: number;
+  entryPrice: number;
+  sizeUsdc: number;
+  expiry: string;
+  openedAtTs: number;
+  openedAt: string;
+  resolvedAtTs?: number;
+  resolvedAt?: string;
+  result?: 0 | 1;
+  pnl?: number;
+  resolutionSource?: string;
+};
+
+type ResultsState = {
+  summary: {
+    totalBets: number;
+    openBets: number;
+    resolvedBets: number;
+    wins: number;
+    winRate: number;
+    totalPnl: number;
+  };
+  recent: PaperBet[];
+  open: PaperBet[];
+};
+
 type ExaAnswerResponse = {
   answer?: {
     headline?: string;
@@ -133,8 +171,10 @@ const CLOB_URL = "https://clob.polymarket.com";
 const EXA_ANSWER_URL = "https://api.exa.ai/answer";
 const SNAPSHOT_CACHE_KEY = "snapshot:latest";
 const RESEARCH_CACHE_KEY = "research:latest";
+const RESULTS_CACHE_KEY = "results:latest";
 const SNAPSHOT_CACHE_TTL_SECONDS = 60 * 30;
 const RESEARCH_CACHE_TTL_SECONDS = 60 * 60 * 6;
+const RESULTS_CACHE_TTL_SECONDS = 60 * 10;
 const FOCUS_CATEGORIES: MarketCategory[] = ["politics", "macro", "awards"];
 
 const CATEGORY_RESEARCH_PLAN: Array<{
@@ -167,7 +207,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/api/health") {
-      const [snapshot, research] = await Promise.all([getSnapshot(env), getResearch(env)]);
+      const [snapshot, research, results] = await Promise.all([getSnapshot(env), getResearch(env), getResults(env)]);
       return json({
         ok: true,
         service: "moneyflow-worker",
@@ -179,12 +219,20 @@ export default {
         focusCategories: FOCUS_CATEGORIES,
         signalCount: snapshot.signalCount,
         researchBriefs: research.briefs.length,
+        totalPaperBets: results.summary.totalBets,
+        resolvedPaperBets: results.summary.resolvedBets,
       });
     }
 
     if (url.pathname === "/api/history") {
       const history = await getHistory(env);
       return json({ history });
+    }
+
+    if (url.pathname === "/api/results") {
+      ctx.waitUntil(resolveOpenPaperBets(env));
+      const results = await getResults(env);
+      return json(results);
     }
 
     if (url.pathname === "/api/research") {
@@ -200,11 +248,13 @@ export default {
 
     if (url.pathname === "/api/scan") {
       const [snapshot, research] = await Promise.all([refreshSnapshot(env), refreshResearch(env)]);
-      return json({ snapshot, research });
+      await resolveOpenPaperBets(env);
+      const results = await getResults(env);
+      return json({ snapshot, research, results });
     }
 
     if (url.pathname === "/api/snapshot") {
-      ctx.waitUntil(refreshResearchIfStale(env));
+      ctx.waitUntil(Promise.all([refreshResearchIfStale(env), resolveOpenPaperBets(env)]));
       const snapshot = await getSnapshot(env);
       return json(snapshot);
     }
@@ -213,7 +263,7 @@ export default {
   },
 
   async scheduled(_controller: ScheduledController, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(Promise.all([refreshSnapshot(env), refreshResearch(env)]));
+    ctx.waitUntil(Promise.all([refreshSnapshot(env), refreshResearch(env), resolveOpenPaperBets(env)]));
   },
 } satisfies ExportedHandler<WorkerEnv>;
 
@@ -248,6 +298,7 @@ async function refreshSnapshot(env: WorkerEnv): Promise<Snapshot> {
   try {
     const snapshot = await collectLiveSnapshot(env);
     await persistSnapshot(env, snapshot);
+    await persistPaperBetsFromSnapshot(env, snapshot);
     return snapshot;
   } catch {
     const fallback = (await getLatestConvexSnapshot(env)) ?? (await getLatestStoredSnapshot(env));
@@ -269,7 +320,7 @@ async function refreshSnapshot(env: WorkerEnv): Promise<Snapshot> {
 }
 
 async function collectLiveSnapshot(env: WorkerEnv): Promise<Snapshot> {
-  const limit = Number.parseInt(env.SNAPSHOT_LIMIT, 10) || 60;
+  const limit = Math.max(Number.parseInt(env.SNAPSHOT_LIMIT, 10) || 60, 120);
   const markets = await fetchActiveMarkets(env, limit);
   if (!markets.length) {
     return demoSnapshot("No live markets available. Serving seeded review data.");
@@ -277,23 +328,31 @@ async function collectLiveSnapshot(env: WorkerEnv): Promise<Snapshot> {
 
   const walletBalance = Math.max(Number.parseFloat(env.MAX_TRADE_USDC) * 10, 100);
   const signals: Signal[] = [];
+  const probes: Signal[] = [];
 
   for (const market of markets) {
     const ob = await fetchOrderBookFeatures(market.yes_token_id);
     const signal = generateSignal(market, ob, walletBalance, env);
     if (signal) {
       signals.push(signal);
+    } else {
+      const probe = generateProbeSignal(market, ob, walletBalance);
+      if (probe) {
+        probes.push(probe);
+      }
     }
   }
 
   signals.sort((a, b) => b.edge - a.edge);
+  probes.sort((a, b) => b.edge - a.edge);
+  const displayedSignals = signals.length ? signals : probes.slice(0, 6);
   const focusMarkets = markets.filter((market) => FOCUS_CATEGORIES.includes(classifyCategory(market.question)));
-  const bestEdge = signals[0]?.edge ?? 0;
-  const avgEdge = signals.length ? signals.reduce((sum, signal) => sum + signal.edge, 0) / signals.length : 0;
-  const avgConfidence = signals.length
-    ? Math.round(signals.reduce((sum, signal) => sum + signal.confidence, 0) / signals.length)
+  const bestEdge = displayedSignals[0]?.edge ?? 0;
+  const avgEdge = displayedSignals.length ? displayedSignals.reduce((sum, signal) => sum + signal.edge, 0) / displayedSignals.length : 0;
+  const avgConfidence = displayedSignals.length
+    ? Math.round(displayedSignals.reduce((sum, signal) => sum + signal.confidence, 0) / displayedSignals.length)
     : 0;
-  const maxPosition = signals.reduce((max, signal) => Math.max(max, signal.size_usdc), 0);
+  const maxPosition = displayedSignals.reduce((max, signal) => Math.max(max, signal.size_usdc), 0);
   const now = new Date();
 
   return {
@@ -302,22 +361,22 @@ async function collectLiveSnapshot(env: WorkerEnv): Promise<Snapshot> {
     balance: usd(walletBalance),
     bestEdge: pct(bestEdge),
     avgEdge: pct(avgEdge),
-    signalCount: signals.length,
+    signalCount: displayedSignals.length,
     marketCount: focusMarkets.length,
     confidence: `${avgConfidence}/99`,
     maxPosition: usd(maxPosition),
-    pill: "Focused on politics, macro, and awards",
+    pill: signals.length ? "Focused on politics, macro, and awards" : "Strict strategy quiet, probe book active",
     source: "live",
     demoMode: false,
     stale: false,
-    signals,
+    signals: displayedSignals,
     markets: focusMarkets.slice(0, 8).map((market) => ({
       title: market.question,
       volume: usd(market.volume),
       yes: `YES ${market.yes_price.toFixed(2)}`,
       category: classifyCategory(market.question),
     })),
-    activity: buildActivity(signals, now, false),
+    activity: buildActivity(displayedSignals, now, false),
   };
 }
 
@@ -554,7 +613,7 @@ function generateSignal(
     return null;
   }
 
-  if (market.yes_price < 0.04 || market.yes_price > 0.96) {
+  if (market.yes_price < 0.02 || market.yes_price > 0.98) {
     return null;
   }
 
@@ -566,9 +625,9 @@ function generateSignal(
   const yesEdge = modelProb - market.yes_price;
   const noEdge = (1 - modelProb) - market.no_price;
   const edge = Math.max(yesEdge, noEdge);
-  const threshold = Number.parseFloat(env.EDGE_THRESHOLD);
+  const threshold = effectiveThreshold(category, Number.parseFloat(env.EDGE_THRESHOLD));
 
-  if (edge < threshold || edge > 0.2) {
+  if (edge < threshold || edge > 0.24) {
     return null;
   }
 
@@ -578,6 +637,7 @@ function generateSignal(
   const sizeUsdc = computeKellySize(modelProb, market.yes_price, side, walletBalance, env);
 
   return {
+    condition_id: market.condition_id,
     market: market.question,
     slug: market.slug,
     side,
@@ -642,6 +702,133 @@ function computeKellySize(modelProb: number, marketPrice: number, side: "YES" | 
 
   const sized = f * Number.parseFloat(env.KELLY_FRACTION) * walletBalance;
   return round(Math.min(sized, Number.parseFloat(env.MAX_TRADE_USDC)), 2);
+}
+
+function generateProbeSignal(
+  market: Market,
+  ob: { imbalance: number; liquidity: number; spread: number },
+  walletBalance: number,
+): Signal | null {
+  const category = classifyCategory(market.question);
+  if (!FOCUS_CATEGORIES.includes(category)) {
+    return null;
+  }
+
+  const strategy = chooseStrategy(category, ob.imbalance);
+  const expiryRaw = market.end_date_iso ?? market.end_date;
+  if (!passesTimeWindow(category, expiryRaw)) {
+    return null;
+  }
+
+  if (market.yes_price < 0.01 || market.yes_price > 0.99) {
+    return null;
+  }
+
+  const side = market.yes_price <= 0.18 ? "YES" : market.yes_price >= 0.82 ? "NO" : null;
+  if (!side) {
+    return null;
+  }
+
+  const modelProb = side === "YES" ? clamp(market.yes_price + 0.03, 0.03, 0.97) : clamp(market.yes_price - 0.03, 0.03, 0.97);
+  const edge = Math.abs(modelProb - market.yes_price);
+
+  return {
+    condition_id: market.condition_id,
+    market: market.question,
+    slug: market.slug,
+    side,
+    edge: round(edge, 4),
+    model_prob: round(modelProb, 4),
+    entry_price: round(side === "YES" ? market.yes_price : market.no_price, 3),
+    size_usdc: round(Math.min(walletBalance * 0.02, 8), 2),
+    expiry: formatExpiry(expiryRaw),
+    confidence: 38,
+    status: "Probe",
+    volume: market.volume,
+    liquidity: market.liquidity,
+    imbalance: round(ob.imbalance, 4),
+    spread: round(ob.spread, 4),
+    category,
+    strategy,
+    rationale: `Paper probe | ${capitalize(category)} | extreme pricing monitor`,
+  };
+}
+
+function signalToPaperBet(signal: Signal, openedAt: string): PaperBet {
+  const openedAtTs = Date.parse(openedAt);
+  return {
+    betKey: `${signal.slug}:${signal.side}:${signal.entry_price}:${openedAt}`,
+    conditionId: signal.condition_id,
+    slug: signal.slug,
+    market: signal.market,
+    category: signal.category,
+    strategy: signal.strategy,
+    side: signal.side,
+    status: "open",
+    confidence: signal.confidence,
+    edge: signal.edge,
+    modelProb: signal.model_prob,
+    entryPrice: signal.entry_price,
+    sizeUsdc: signal.size_usdc,
+    expiry: signal.expiry,
+    openedAtTs: Number.isFinite(openedAtTs) ? openedAtTs : Date.now(),
+    openedAt,
+  };
+}
+
+async function fetchMarketResolution(
+  slug: string,
+  conditionId: string,
+): Promise<{ result: 0 | 1 | null; source: string } | null> {
+  const endpoints = [
+    `${GAMMA_URL}/markets?slug=${encodeURIComponent(slug)}`,
+    `${GAMMA_URL}/markets?condition_id=${encodeURIComponent(conditionId)}`,
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint);
+      if (!response.ok) {
+        continue;
+      }
+      const payload = (await response.json()) as Array<Record<string, unknown>>;
+      const market = payload?.[0];
+      if (!market) {
+        continue;
+      }
+
+      if (!market.resolved) {
+        return { result: null, source: "unresolved" };
+      }
+
+      const resolution = String(market.resolution ?? "").toLowerCase();
+      if (resolution === "yes" || resolution === "1") {
+        return { result: 1, source: "resolution" };
+      }
+      if (resolution === "no" || resolution === "0") {
+        return { result: 0, source: "resolution" };
+      }
+
+      const tokens = Array.isArray(market.tokens) ? (market.tokens as Array<Record<string, unknown>>) : [];
+      for (const token of tokens) {
+        const outcome = String(token.outcome ?? "").toLowerCase();
+        const price = Number(token.price ?? 0);
+        if (price >= 0.99) {
+          return { result: outcome === "yes" ? 1 : 0, source: "token-price" };
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function computePaperPnl(bet: PaperBet, result: 0 | 1): number {
+  const shares = bet.entryPrice > 0 ? bet.sizeUsdc / bet.entryPrice : 0;
+  const won = (bet.side === "YES" && result === 1) || (bet.side === "NO" && result === 0);
+  return round(won ? shares * (1 - bet.entryPrice) : -shares * bet.entryPrice, 2);
 }
 
 async function persistSnapshot(env: WorkerEnv, snapshot: Snapshot): Promise<void> {
@@ -766,6 +953,107 @@ async function getHistory(env: WorkerEnv): Promise<SnapshotHistoryItem[]> {
   }));
 }
 
+async function getResults(env: WorkerEnv): Promise<ResultsState> {
+  const cached = await env.SNAPSHOT_CACHE.get(RESULTS_CACHE_KEY, "json");
+  if (cached) {
+    return cached as ResultsState;
+  }
+
+  if (env.CONVEX_SITE_URL) {
+    try {
+      const response = await fetch(`${env.CONVEX_SITE_URL}/results?limit=20`);
+      if (response.ok) {
+        const payload = (await response.json()) as ResultsState;
+        await cacheJson(env.SNAPSHOT_CACHE, RESULTS_CACHE_KEY, payload, RESULTS_CACHE_TTL_SECONDS);
+        return payload;
+      }
+    } catch {
+      // ignore and fall back
+    }
+  }
+
+  const empty = emptyResultsState();
+  await cacheJson(env.SNAPSHOT_CACHE, RESULTS_CACHE_KEY, empty, RESULTS_CACHE_TTL_SECONDS);
+  return empty;
+}
+
+async function persistPaperBetsFromSnapshot(env: WorkerEnv, snapshot: Snapshot): Promise<void> {
+  if (!env.CONVEX_SITE_URL || !env.CONVEX_INGEST_SECRET || !snapshot.signals.length) {
+    return;
+  }
+
+  const bets = snapshot.signals.slice(0, 8).map((signal) => signalToPaperBet(signal, snapshot.updatedAt));
+  await fetch(`${env.CONVEX_SITE_URL}/ingest/paper-bets`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-ingest-secret": env.CONVEX_INGEST_SECRET,
+    },
+    body: JSON.stringify({ bets }),
+  });
+  await env.SNAPSHOT_CACHE.delete(RESULTS_CACHE_KEY);
+}
+
+async function resolveOpenPaperBets(env: WorkerEnv): Promise<void> {
+  if (!env.CONVEX_SITE_URL || !env.CONVEX_INGEST_SECRET) {
+    return;
+  }
+
+  const response = await fetch(`${env.CONVEX_SITE_URL}/results?limit=80`);
+  if (!response.ok) {
+    return;
+  }
+  const results = (await response.json()) as ResultsState;
+  const open = results.open ?? [];
+  if (!open.length) {
+    await cacheJson(env.SNAPSHOT_CACHE, RESULTS_CACHE_KEY, results, RESULTS_CACHE_TTL_SECONDS);
+    return;
+  }
+
+  const updates: Array<{
+    betKey: string;
+    status: "resolved";
+    resolvedAtTs: number;
+    resolvedAt: string;
+    result: 0 | 1;
+    pnl: number;
+    resolutionSource: string;
+  }> = [];
+
+  for (const bet of open.slice(0, 40)) {
+    const resolution = await fetchMarketResolution(bet.slug, bet.conditionId);
+    if (!resolution || resolution.result === null) {
+      continue;
+    }
+
+    updates.push({
+      betKey: bet.betKey,
+      status: "resolved",
+      resolvedAtTs: Date.now(),
+      resolvedAt: formatTimestamp(new Date()),
+      result: resolution.result,
+      pnl: computePaperPnl(bet, resolution.result),
+      resolutionSource: resolution.source,
+    });
+  }
+
+  if (!updates.length) {
+    await cacheJson(env.SNAPSHOT_CACHE, RESULTS_CACHE_KEY, results, RESULTS_CACHE_TTL_SECONDS);
+    return;
+  }
+
+  await fetch(`${env.CONVEX_SITE_URL}/resolve/paper-bets`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-ingest-secret": env.CONVEX_INGEST_SECRET,
+    },
+    body: JSON.stringify({ updates }),
+  });
+
+  await env.SNAPSHOT_CACHE.delete(RESULTS_CACHE_KEY);
+}
+
 async function ensureSchema(env: WorkerEnv): Promise<void> {
   await env.DB.batch([
     env.DB.prepare(
@@ -786,9 +1074,9 @@ function passesTimeWindow(category: MarketCategory, raw?: string): boolean {
 
   const daysLeft = (expiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
   const maxDays =
-    category === "macro" ? 45 :
-    category === "awards" ? 180 :
-    category === "politics" ? 180 :
+    category === "macro" ? 120 :
+    category === "awards" ? 365 :
+    category === "politics" ? 365 :
     30;
   return daysLeft > 0 && daysLeft <= maxDays;
 }
@@ -821,6 +1109,15 @@ function chooseStrategy(category: MarketCategory, imbalance: number): StrategyMo
     return "liquidity-reversion";
   }
   return "consensus-fade";
+}
+
+function effectiveThreshold(category: MarketCategory, baseThreshold: number): number {
+  const adjusted =
+    category === "macro" ? baseThreshold - 0.045 :
+    category === "politics" ? baseThreshold - 0.04 :
+    category === "awards" ? baseThreshold - 0.05 :
+    baseThreshold;
+  return clamp(adjusted, 0.015, 0.2);
 }
 
 function categoryConfidenceBoost(category: MarketCategory): number {
@@ -856,6 +1153,7 @@ function demoSnapshot(detail: string): Snapshot {
   const updatedAt = formatTimestamp(new Date());
   const signals: Signal[] = [
     {
+      condition_id: "fed-cut-before-september",
       market: "Will the Fed cut rates before September?",
       slug: "fed-cut-before-september",
       side: "YES",
@@ -875,6 +1173,7 @@ function demoSnapshot(detail: string): Snapshot {
       rationale: "Macro | consensus fade | seeded review data",
     },
     {
+      condition_id: "newsom-2028-before-labor-day",
       market: "Will Gavin Newsom enter the 2028 race before Labor Day?",
       slug: "newsom-2028-before-labor-day",
       side: "NO",
@@ -894,6 +1193,7 @@ function demoSnapshot(detail: string): Snapshot {
       rationale: "Politics | consensus fade | seeded review data",
     },
     {
+      condition_id: "cannes-palme-first-time-winner",
       market: "Will Cannes Palme d'Or go to a first-time winner?",
       slug: "cannes-palme-first-time-winner",
       side: "YES",
@@ -1006,6 +1306,21 @@ function demoResearchState(detail: string): ResearchState {
         stale: false,
       },
     ],
+  };
+}
+
+function emptyResultsState(): ResultsState {
+  return {
+    summary: {
+      totalBets: 0,
+      openBets: 0,
+      resolvedBets: 0,
+      wins: 0,
+      winRate: 0,
+      totalPnl: 0,
+    },
+    recent: [],
+    open: [],
   };
 }
 

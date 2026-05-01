@@ -104,6 +104,40 @@ const fallbackResearch = {
   ],
 };
 
+const fallbackResults = {
+  summary: {
+    totalBets: 12,
+    openBets: 4,
+    resolvedBets: 8,
+    wins: 5,
+    winRate: 0.625,
+    totalPnl: 18.4,
+  },
+  recent: [
+    {
+      openedAt: "May 01, 2026, 09:20 UTC",
+      market: "Will the Fed cut rates before September?",
+      side: "YES",
+      category: "macro",
+      entryPrice: 0.53,
+      sizeUsdc: 25,
+      status: "resolved",
+      pnl: 6.1,
+    },
+    {
+      openedAt: "Apr 28, 2026, 14:05 UTC",
+      market: "Will Gavin Newsom enter the 2028 race before Labor Day?",
+      side: "NO",
+      category: "politics",
+      entryPrice: 0.62,
+      sizeUsdc: 18.5,
+      status: "open",
+      pnl: 0,
+    },
+  ],
+  open: [],
+};
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -293,6 +327,46 @@ function renderHistory(history) {
     .join("");
 }
 
+function renderResults(results) {
+  const summary = results?.summary ?? fallbackResults.summary;
+  text("[data-total-bets]", String(summary.totalBets ?? 0));
+  text("[data-resolved-bets]", String(summary.resolvedBets ?? 0));
+  text("[data-win-rate]", percent(summary.winRate ?? 0));
+  text("[data-total-pnl]", money(summary.totalPnl ?? 0));
+
+  const resultsTable = document.getElementById("results-table");
+  if (!resultsTable) return;
+
+  const rows = [...(results?.recent ?? []), ...(results?.open ?? [])].slice(0, 20);
+  if (!rows.length) {
+    resultsTable.innerHTML = `
+      <tr>
+        <td colspan="8" class="empty-state">
+          No paper bets have been captured yet. Run a few live scans and the results book will populate automatically.
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  resultsTable.innerHTML = rows
+    .map(
+      (bet) => `
+      <tr>
+        <td>${escapeHtml(bet.openedAt ?? "—")}</td>
+        <td>${escapeHtml(bet.market ?? "—")}</td>
+        <td class="${bet.side === "YES" ? "side-yes" : "side-no"}">${escapeHtml(bet.side ?? "—")}</td>
+        <td><span class="cell-chip">${escapeHtml(bet.category ?? "other")}</span></td>
+        <td>${typeof bet.entryPrice === "number" ? bet.entryPrice.toFixed(3) : "—"}</td>
+        <td>${money(bet.sizeUsdc ?? 0)}</td>
+        <td>${escapeHtml(bet.status ?? "open")}</td>
+        <td class="${(bet.pnl ?? 0) >= 0 ? "pnl-positive" : "pnl-negative"}">${money(bet.pnl ?? 0)}</td>
+      </tr>
+    `,
+    )
+    .join("");
+}
+
 async function fetchJson(url) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -303,19 +377,22 @@ async function fetchJson(url) {
 
 async function loadAll() {
   try {
-    const [snapshot, historyPayload, research] = await Promise.all([
+    const [snapshot, historyPayload, research, results] = await Promise.all([
       fetchJson("/api/snapshot"),
       fetchJson("/api/history"),
       fetchJson("/api/research"),
+      fetchJson("/api/results"),
     ]);
 
     renderSnapshot(snapshot);
     renderHistory(historyPayload.history ?? []);
     renderResearch(research);
+    renderResults(results);
   } catch {
     renderSnapshot(fallbackSnapshot);
     renderHistory([]);
     renderResearch(fallbackResearch);
+    renderResults(fallbackResults);
   }
 }
 
@@ -324,11 +401,13 @@ document.getElementById("refresh-scan")?.addEventListener("click", async () => {
     const payload = await fetchJson("/api/scan");
     renderSnapshot(payload.snapshot ?? fallbackSnapshot);
     renderResearch(payload.research ?? fallbackResearch);
+    renderResults(payload.results ?? fallbackResults);
     const history = await fetchJson("/api/history");
     renderHistory(history.history ?? []);
   } catch {
     renderSnapshot(fallbackSnapshot);
     renderResearch(fallbackResearch);
+    renderResults(fallbackResults);
   }
 });
 
@@ -344,4 +423,5 @@ document.getElementById("refresh-research")?.addEventListener("click", async () 
 renderSnapshot(fallbackSnapshot);
 renderResearch(fallbackResearch);
 renderHistory([]);
+renderResults(fallbackResults);
 loadAll();

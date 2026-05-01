@@ -134,6 +134,25 @@
           </article>
         </section>
 
+        <section class="kpi-row kpi-row-results">
+          <article class="kpi-card">
+            <p class="metric-label">Paper bets</p>
+            <p class="kpi-value" data-total-bets>0</p>
+          </article>
+          <article class="kpi-card">
+            <p class="metric-label">Resolved</p>
+            <p class="kpi-value" data-resolved-bets>0</p>
+          </article>
+          <article class="kpi-card">
+            <p class="metric-label">Win rate</p>
+            <p class="kpi-value" data-win-rate>0.00%</p>
+          </article>
+          <article class="kpi-card">
+            <p class="metric-label">Realized P&amp;L</p>
+            <p class="kpi-value" data-total-pnl>$0.00</p>
+          </article>
+        </section>
+
         <section class="workspace">
           <section class="panel panel-wide" id="signals">
             <div class="panel-head">
@@ -231,6 +250,34 @@
                 </tr>
               </thead>
               <tbody id="history-table"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel" id="results">
+          <div class="panel-head">
+            <div>
+              <p class="metric-label">Paper book</p>
+              <h3>Recent bets</h3>
+            </div>
+            <p class="panel-copy">Automatically captured from live scans and resolved against Polymarket outcomes.</p>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Opened</th>
+                  <th>Market</th>
+                  <th>Side</th>
+                  <th>Category</th>
+                  <th>Entry</th>
+                  <th>Size</th>
+                  <th>Status</th>
+                  <th>P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody id="results-table"></tbody>
             </table>
           </div>
         </section>

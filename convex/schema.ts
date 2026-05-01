@@ -31,4 +31,30 @@ export default defineSchema({
   })
     .index("by_updatedAtTs", ["updatedAtTs"])
     .index("by_category", ["category", "updatedAtTs"]),
+  paperBets: defineTable({
+    betKey: v.string(),
+    conditionId: v.string(),
+    slug: v.string(),
+    market: v.string(),
+    category: v.string(),
+    strategy: v.string(),
+    side: v.string(),
+    status: v.string(),
+    confidence: v.number(),
+    edge: v.number(),
+    modelProb: v.number(),
+    entryPrice: v.number(),
+    sizeUsdc: v.number(),
+    expiry: v.string(),
+    openedAtTs: v.number(),
+    openedAt: v.string(),
+    resolvedAtTs: v.optional(v.number()),
+    resolvedAt: v.optional(v.string()),
+    result: v.optional(v.number()),
+    pnl: v.optional(v.number()),
+    resolutionSource: v.optional(v.string()),
+  })
+    .index("by_betKey", ["betKey"])
+    .index("by_status", ["status", "openedAtTs"])
+    .index("by_category", ["category", "openedAtTs"]),
 });

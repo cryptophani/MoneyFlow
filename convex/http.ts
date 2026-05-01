@@ -43,6 +43,22 @@ http.route({
 });
 
 http.route({
+  path: "/results",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const url = new URL(request.url);
+    const rawLimit = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
+    const limit = Number.isFinite(rawLimit) ? rawLimit : 20;
+    const [summary, recent, open] = await Promise.all([
+      ctx.runQuery(api.paperBets.summary, {}),
+      ctx.runQuery(api.paperBets.recent, { limit }),
+      ctx.runQuery(api.paperBets.openBets, { limit }),
+    ]);
+    return json({ summary, recent, open });
+  }),
+});
+
+http.route({
   path: "/ingest/snapshot",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
@@ -87,6 +103,40 @@ http.route({
       briefs: Array.isArray(payload.briefs) ? (payload.briefs as never[]) : [],
     });
 
+    return json(result);
+  }),
+});
+
+http.route({
+  path: "/ingest/paper-bets",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const expectedSecret = process.env.WORKER_INGEST_SECRET;
+    if (!expectedSecret || request.headers.get("x-ingest-secret") !== expectedSecret) {
+      return json({ ok: false, error: "unauthorized" }, 401);
+    }
+
+    const payload = (await request.json()) as { bets?: unknown[] };
+    const result = await ctx.runMutation(api.paperBets.ingestBatch, {
+      bets: Array.isArray(payload.bets) ? (payload.bets as never[]) : [],
+    });
+    return json(result);
+  }),
+});
+
+http.route({
+  path: "/resolve/paper-bets",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const expectedSecret = process.env.WORKER_INGEST_SECRET;
+    if (!expectedSecret || request.headers.get("x-ingest-secret") !== expectedSecret) {
+      return json({ ok: false, error: "unauthorized" }, 401);
+    }
+
+    const payload = (await request.json()) as { updates?: unknown[] };
+    const result = await ctx.runMutation(api.paperBets.resolveBatch, {
+      updates: Array.isArray(payload.updates) ? (payload.updates as never[]) : [],
+    });
     return json(result);
   }),
 });
