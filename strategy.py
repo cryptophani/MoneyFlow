@@ -1,6 +1,6 @@
 import logging
 from typing import Optional
-from config import EDGE_THRESHOLD, KELLY_FRACTION, MAX_TRADE_USDC
+from config import EDGE_THRESHOLD, KELLY_FRACTION, MAX_TRADE_USDC, MIN_LIQUIDITY, MIN_VOLUME
 
 logger = logging.getLogger(__name__)
 
@@ -11,10 +11,10 @@ def estimate_model_probability(market, ob_features):
     imbalance = ob_features.get("imbalance", 0)
 
     volume = market.get("volume", 0)
-    liquidity = ob_features.get("liquidity", 0)
+    liquidity = ob_features.get("liquidity", market.get("liquidity", 0))
 
     # ❌ Filter bad markets
-    if volume < 3000 or liquidity < 1500:
+    if volume < MIN_VOLUME or liquidity < MIN_LIQUIDITY:
         return None
 
     # ❌ Avoid extreme markets
@@ -101,7 +101,7 @@ def generate_signal(market, ob_features, price_history, wallet_balance):
     edge = max(yes_edge, no_edge)
 
     # ❌ Remove weak & fake edges
-    if edge < 0.01 or edge > 0.15:
+    if edge < EDGE_THRESHOLD or edge > 0.15:
         return None
 
     # Decide side
@@ -132,5 +132,11 @@ def generate_signal(market, ob_features, price_history, wallet_balance):
         "size_usdc": size,
         "edge": round(final_edge, 4),
         "model_prob": round(model_prob, 4),
-        "market_price": yes_price
+        "market_price": yes_price,
+        "spread": round(ob_features.get("spread", 0.0), 4),
+        "features": {
+            "imbalance": round(ob_features.get("imbalance", 0.0), 4),
+            "liquidity": round(ob_features.get("liquidity", market.get("liquidity", 0.0)), 2),
+            "price_deviation": round(model_prob - yes_price, 4),
+        },
     }
