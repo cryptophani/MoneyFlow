@@ -1,6 +1,8 @@
 type MarketCategory = "politics" | "macro" | "awards" | "sports" | "crypto" | "other";
 type StrategyMode = "consensus-fade" | "event-specialist" | "liquidity-reversion";
 type Conviction = "Monitor" | "Prepare" | "Active";
+type ScanPreset = "strict" | "balanced" | "discovery";
+type TradeTier = "A" | "B" | "C" | "Probe";
 
 type Market = {
   condition_id: string;
@@ -35,15 +37,24 @@ type Signal = {
   category: MarketCategory;
   strategy: StrategyMode;
   rationale: string;
+  quality_score: number;
+  market_quality: number;
+  setup_quality: number;
+  trade_tier: TradeTier;
+  flags: string[];
+  is_probe: boolean;
 };
 
 type Snapshot = {
   updatedAt: string;
+  preset: ScanPreset;
   threshold: string;
   balance: string;
   bestEdge: string;
   avgEdge: string;
   signalCount: number;
+  strictSignalCount: number;
+  probeSignalCount: number;
   marketCount: number;
   confidence: string;
   maxPosition: string;
@@ -54,6 +65,36 @@ type Snapshot = {
   signals: Signal[];
   markets: Array<{ title: string; volume: string; yes: string; category: string }>;
   activity: Array<{ time: string; title: string; detail: string }>;
+};
+
+type AnalyticsBucket = {
+  key: string;
+  totalBets: number;
+  openBets: number;
+  resolvedBets: number;
+  wins: number;
+  winRate: number;
+  totalPnl: number;
+  exposure: number;
+  avgEdge: number;
+};
+
+type AnalyticsState = {
+  updatedAt: string;
+  summary: {
+    totalBets: number;
+    resolvedBets: number;
+    openBets: number;
+    openExposure: number;
+    avgOpenEdge: number;
+    avgResolvedPnl: number;
+    strictOpenCount: number;
+    probeOpenCount: number;
+  };
+  byCategory: AnalyticsBucket[];
+  byStrategy: AnalyticsBucket[];
+  byPriceBand: AnalyticsBucket[];
+  insights: string[];
 };
 
 type SnapshotHistoryItem = {
@@ -181,9 +222,11 @@ const EXA_ANSWER_URL = "https://api.exa.ai/answer";
 const SNAPSHOT_CACHE_KEY = "snapshot:latest";
 const RESEARCH_CACHE_KEY = "research:latest";
 const RESULTS_CACHE_KEY = "results:latest";
+const ANALYTICS_CACHE_KEY = "analytics:latest";
 const SNAPSHOT_CACHE_TTL_SECONDS = 60 * 30;
 const RESEARCH_CACHE_TTL_SECONDS = 60 * 60 * 6;
 const RESULTS_CACHE_TTL_SECONDS = 60 * 10;
+const ANALYTICS_CACHE_TTL_SECONDS = 60 * 10;
 const FOCUS_CATEGORIES: MarketCategory[] = ["politics", "macro", "awards"];
 
 const CATEGORY_RESEARCH_PLAN: Array<{
@@ -214,6 +257,7 @@ const CATEGORY_RESEARCH_PLAN: Array<{
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const preset = parsePreset(url.searchParams.get("preset"));
 
     if (url.pathname === "/api/health") {
       const [snapshot, research, results] = await Promise.all([getSnapshot(env), getResearch(env), getResults(env)]);
@@ -236,6 +280,11 @@ export default {
     if (url.pathname === "/api/history") {
       const history = await getHistory(env);
       return json({ history });
+    }
+
+    if (url.pathname === "/api/analytics") {
+      const analytics = await getAnalytics(env);
+      return json(analytics);
     }
 
     if (url.pathname === "/api/source-preview") {
@@ -272,15 +321,21 @@ export default {
     }
 
     if (url.pathname === "/api/scan") {
-      const [snapshot, research] = await Promise.all([refreshSnapshot(env), refreshResearch(env)]);
-      await resolveOpenPaperBets(env);
+      const [snapshot, research] = await Promise.all([
+        preset === "balanced" ? refreshSnapshot(env) : previewSnapshot(env, preset),
+        refreshResearch(env),
+      ]);
+      if (preset === "balanced") {
+        await resolveOpenPaperBets(env);
+      }
       const results = await getResults(env);
-      return json({ snapshot, research, results });
+      const analytics = await getAnalytics(env);
+      return json({ snapshot, research, results, analytics });
     }
 
     if (url.pathname === "/api/snapshot") {
       ctx.waitUntil(Promise.all([refreshResearchIfStale(env), resolveOpenPaperBets(env)]));
-      const snapshot = await getSnapshot(env);
+      const snapshot = preset === "balanced" ? await getSnapshot(env) : await previewSnapshot(env, preset);
       return json(snapshot);
     }
 
@@ -321,7 +376,7 @@ async function getSnapshot(env: WorkerEnv): Promise<Snapshot> {
 async function refreshSnapshot(env: WorkerEnv): Promise<Snapshot> {
   await ensureSchema(env);
   try {
-    const snapshot = await collectLiveSnapshot(env);
+    const snapshot = await collectLiveSnapshot(env, "balanced");
     await persistSnapshot(env, snapshot);
     await persistPaperBetsFromSnapshot(env, snapshot);
     return snapshot;
@@ -344,7 +399,16 @@ async function refreshSnapshot(env: WorkerEnv): Promise<Snapshot> {
   }
 }
 
-async function collectLiveSnapshot(env: WorkerEnv): Promise<Snapshot> {
+async function previewSnapshot(env: WorkerEnv, preset: ScanPreset): Promise<Snapshot> {
+  try {
+    return await collectLiveSnapshot(env, preset);
+  } catch {
+    const base = await getSnapshot(env);
+    return { ...base, preset, pill: `Serving cached balanced snapshot while ${preset} preview recovers`, stale: true };
+  }
+}
+
+async function collectLiveSnapshot(env: WorkerEnv, preset: ScanPreset): Promise<Snapshot> {
   const limit = Math.max(Number.parseInt(env.SNAPSHOT_LIMIT, 10) || 60, 120);
   const markets = await fetchActiveMarkets(env, limit);
   if (!markets.length) {
@@ -357,11 +421,11 @@ async function collectLiveSnapshot(env: WorkerEnv): Promise<Snapshot> {
 
   for (const market of markets) {
     const ob = await fetchOrderBookFeatures(market.yes_token_id);
-    const signal = generateSignal(market, ob, walletBalance, env);
+    const signal = generateSignal(market, ob, walletBalance, env, preset);
     if (signal) {
       signals.push(signal);
     } else {
-      const probe = generateProbeSignal(market, ob, walletBalance);
+      const probe = generateProbeSignal(market, ob, walletBalance, preset);
       if (probe) {
         probes.push(probe);
       }
@@ -382,15 +446,23 @@ async function collectLiveSnapshot(env: WorkerEnv): Promise<Snapshot> {
 
   return {
     updatedAt: formatTimestamp(now),
+    preset,
     threshold: pct(Number.parseFloat(env.EDGE_THRESHOLD)),
     balance: usd(walletBalance),
     bestEdge: pct(bestEdge),
     avgEdge: pct(avgEdge),
     signalCount: displayedSignals.length,
+    strictSignalCount: signals.length,
+    probeSignalCount: probes.length,
     marketCount: focusMarkets.length,
     confidence: `${avgConfidence}/99`,
     maxPosition: usd(maxPosition),
-    pill: signals.length ? "Focused on politics, macro, and awards" : "Strict strategy quiet, probe book active",
+    pill:
+      signals.length
+        ? `${capitalize(preset)} mode surfaced ${signals.length} qualified ideas`
+        : probes.length
+          ? `${capitalize(preset)} mode is showing probe ideas only`
+          : `${capitalize(preset)} mode is preserving capital and passing on weak setups`,
     source: "live",
     demoMode: false,
     stale: false,
@@ -622,6 +694,7 @@ function generateSignal(
   ob: { imbalance: number; liquidity: number; spread: number },
   walletBalance: number,
   env: WorkerEnv,
+  preset: ScanPreset,
 ): Signal | null {
   const category = classifyCategory(market.question);
   if (!FOCUS_CATEGORIES.includes(category)) {
@@ -643,13 +716,19 @@ function generateSignal(
     return null;
   }
 
+  const quality = assessSignalQuality(market, ob, category, preset, false);
+  const config = presetConfig(preset);
+  if (ob.spread > config.maxSpread || quality.marketQuality < config.minMarketQuality) {
+    return null;
+  }
+
   const modelProb = estimateModelProbability(category, strategy, market.yes_price, ob.imbalance, ob.spread);
   const yesEdge = modelProb - market.yes_price;
   const noEdge = (1 - modelProb) - market.no_price;
   const edge = Math.max(yesEdge, noEdge);
-  const threshold = effectiveThreshold(category, Number.parseFloat(env.EDGE_THRESHOLD));
+  const threshold = effectiveThreshold(category, Number.parseFloat(env.EDGE_THRESHOLD), preset);
 
-  if (edge < threshold || edge > 0.24) {
+  if (edge < threshold || edge > config.maxEdge) {
     return null;
   }
 
@@ -657,6 +736,9 @@ function generateSignal(
   const entryPrice = side === "YES" ? market.yes_price : market.no_price;
   const confidence = Math.min(99, Math.max(15, Math.round(edge * 1000 + categoryConfidenceBoost(category))));
   const sizeUsdc = computeKellySize(modelProb, market.yes_price, side, walletBalance, env);
+  const setupQuality = computeSetupQuality(edge, confidence, strategy, quality.flags, false);
+  const qualityScore = clamp(Math.round((quality.marketQuality * 0.55) + (setupQuality * 0.45)), 1, 99);
+  const tradeTier = determineTradeTier(qualityScore, false);
 
   return {
     condition_id: market.condition_id,
@@ -676,7 +758,13 @@ function generateSignal(
     spread: round(ob.spread, 4),
     category,
     strategy,
-    rationale: describeRationale(category, strategy, market, ob, edge),
+    rationale: describeRationale(category, strategy, market, ob, edge, quality.flags, qualityScore),
+    quality_score: qualityScore,
+    market_quality: quality.marketQuality,
+    setup_quality: setupQuality,
+    trade_tier: tradeTier,
+    flags: quality.flags,
+    is_probe: false,
   };
 }
 
@@ -730,7 +818,12 @@ function generateProbeSignal(
   market: Market,
   ob: { imbalance: number; liquidity: number; spread: number },
   walletBalance: number,
+  preset: ScanPreset,
 ): Signal | null {
+  const config = presetConfig(preset);
+  if (!config.allowProbes) {
+    return null;
+  }
   const category = classifyCategory(market.question);
   if (!FOCUS_CATEGORIES.includes(category)) {
     return null;
@@ -751,8 +844,15 @@ function generateProbeSignal(
     return null;
   }
 
+  const quality = assessSignalQuality(market, ob, category, preset, true);
+  if (ob.spread > config.maxProbeSpread || quality.marketQuality < config.minProbeMarketQuality) {
+    return null;
+  }
+
   const modelProb = side === "YES" ? clamp(market.yes_price + 0.03, 0.03, 0.97) : clamp(market.yes_price - 0.03, 0.03, 0.97);
   const edge = Math.abs(modelProb - market.yes_price);
+  const setupQuality = computeSetupQuality(edge, 38, strategy, quality.flags, true);
+  const qualityScore = clamp(Math.round((quality.marketQuality * 0.6) + (setupQuality * 0.4)), 1, 99);
 
   return {
     condition_id: market.condition_id,
@@ -772,7 +872,13 @@ function generateProbeSignal(
     spread: round(ob.spread, 4),
     category,
     strategy,
-    rationale: `Paper probe | ${capitalize(category)} | extreme pricing monitor`,
+    rationale: describeRationale(category, strategy, market, ob, edge, quality.flags, qualityScore),
+    quality_score: qualityScore,
+    market_quality: quality.marketQuality,
+    setup_quality: setupQuality,
+    trade_tier: "Probe",
+    flags: quality.flags,
+    is_probe: true,
   };
 }
 
@@ -1025,6 +1131,34 @@ async function getResults(env: WorkerEnv): Promise<ResultsState> {
   return empty;
 }
 
+async function getAnalytics(env: WorkerEnv): Promise<AnalyticsState> {
+  const cached = await env.SNAPSHOT_CACHE.get(ANALYTICS_CACHE_KEY, "json");
+  if (cached) {
+    return cached as AnalyticsState;
+  }
+
+  const results = await fetchResultsForAnalytics(env);
+  const analytics = buildAnalytics(results);
+  await cacheJson(env.SNAPSHOT_CACHE, ANALYTICS_CACHE_KEY, analytics, ANALYTICS_CACHE_TTL_SECONDS);
+  return analytics;
+}
+
+async function fetchResultsForAnalytics(env: WorkerEnv): Promise<ResultsState> {
+  if (!env.CONVEX_SITE_URL) {
+    return emptyResultsState();
+  }
+
+  try {
+    const response = await fetch(`${env.CONVEX_SITE_URL}/results?limit=500`);
+    if (!response.ok) {
+      return emptyResultsState();
+    }
+    return (await response.json()) as ResultsState;
+  } catch {
+    return emptyResultsState();
+  }
+}
+
 async function persistPaperBetsFromSnapshot(env: WorkerEnv, snapshot: Snapshot): Promise<void> {
   if (!env.CONVEX_SITE_URL || !env.CONVEX_INGEST_SECRET || !snapshot.signals.length) {
     return;
@@ -1047,6 +1181,7 @@ async function persistPaperBetsFromSnapshot(env: WorkerEnv, snapshot: Snapshot):
     },
   });
   await env.SNAPSHOT_CACHE.delete(RESULTS_CACHE_KEY);
+  await env.SNAPSHOT_CACHE.delete(ANALYTICS_CACHE_KEY);
 }
 
 async function resolveOpenPaperBets(env: WorkerEnv): Promise<void> {
@@ -1107,6 +1242,7 @@ async function resolveOpenPaperBets(env: WorkerEnv): Promise<void> {
   });
 
   await env.SNAPSHOT_CACHE.delete(RESULTS_CACHE_KEY);
+  await env.SNAPSHOT_CACHE.delete(ANALYTICS_CACHE_KEY);
 }
 
 async function ensureSchema(env: WorkerEnv): Promise<void> {
@@ -1166,17 +1302,111 @@ function chooseStrategy(category: MarketCategory, imbalance: number): StrategyMo
   return "consensus-fade";
 }
 
-function effectiveThreshold(category: MarketCategory, baseThreshold: number): number {
+function presetConfig(preset: ScanPreset): {
+  allowProbes: boolean;
+  thresholdDelta: number;
+  maxSpread: number;
+  maxProbeSpread: number;
+  minMarketQuality: number;
+  minProbeMarketQuality: number;
+  maxEdge: number;
+} {
+  if (preset === "strict") {
+    return {
+      allowProbes: false,
+      thresholdDelta: 0.02,
+      maxSpread: 0.08,
+      maxProbeSpread: 0.12,
+      minMarketQuality: 72,
+      minProbeMarketQuality: 80,
+      maxEdge: 0.18,
+    };
+  }
+  if (preset === "discovery") {
+    return {
+      allowProbes: true,
+      thresholdDelta: -0.015,
+      maxSpread: 0.18,
+      maxProbeSpread: 0.999,
+      minMarketQuality: 45,
+      minProbeMarketQuality: 12,
+      maxEdge: 0.3,
+    };
+  }
+  return {
+    allowProbes: true,
+    thresholdDelta: 0,
+    maxSpread: 0.12,
+    maxProbeSpread: 0.35,
+    minMarketQuality: 58,
+    minProbeMarketQuality: 28,
+    maxEdge: 0.24,
+  };
+}
+
+function effectiveThreshold(category: MarketCategory, baseThreshold: number, preset: ScanPreset): number {
+  const config = presetConfig(preset);
   const adjusted =
     category === "macro" ? baseThreshold - 0.045 :
     category === "politics" ? baseThreshold - 0.04 :
     category === "awards" ? baseThreshold - 0.05 :
     baseThreshold;
-  return clamp(adjusted, 0.015, 0.2);
+  return clamp(adjusted + config.thresholdDelta, 0.015, 0.2);
 }
 
 function categoryConfidenceBoost(category: MarketCategory): number {
   return category === "macro" ? 10 : category === "politics" ? 8 : category === "awards" ? 6 : 0;
+}
+
+function assessSignalQuality(
+  market: Market,
+  ob: { imbalance: number; liquidity: number; spread: number },
+  category: MarketCategory,
+  preset: ScanPreset,
+  isProbe: boolean,
+): { marketQuality: number; flags: string[] } {
+  const daysLeft = daysUntil(market.end_date_iso ?? market.end_date);
+  const volumeScore = clamp(Math.round(Math.log10(Math.max(market.volume, 1)) * 18 - 58), 5, 99);
+  const liquidityScore = clamp(Math.round(Math.log10(Math.max(ob.liquidity, 1)) * 24 - 36), 5, 99);
+  const spreadScore = clamp(Math.round(99 - ob.spread * 220), 0, 99);
+  const timeScore = !Number.isFinite(daysLeft) ? 65 : clamp(Math.round(95 - Math.abs(daysLeft - 35)), 18, 95);
+  const categoryScore = category === "macro" ? 90 : category === "politics" ? 84 : category === "awards" ? 78 : 60;
+  const presetPenalty = preset === "strict" && isProbe ? 25 : 0;
+  const marketQuality = clamp(
+    Math.round(volumeScore * 0.22 + liquidityScore * 0.26 + spreadScore * 0.28 + timeScore * 0.12 + categoryScore * 0.12 - presetPenalty),
+    1,
+    99,
+  );
+
+  const flags: string[] = [];
+  if (ob.spread > 0.12) flags.push("Wide spread");
+  if (ob.liquidity < 10000) flags.push("Thin order book");
+  if (market.yes_price < 0.05 || market.yes_price > 0.95) flags.push("Tail pricing");
+  if (Number.isFinite(daysLeft) && daysLeft > 120) flags.push("Long-dated");
+  if (isProbe) flags.push("Probe only");
+
+  return { marketQuality, flags };
+}
+
+function computeSetupQuality(
+  edge: number,
+  confidence: number,
+  strategy: StrategyMode,
+  flags: string[],
+  isProbe: boolean,
+): number {
+  const edgeScore = clamp(Math.round(edge * 1400), 8, 99);
+  const confidenceScore = clamp(confidence, 1, 99);
+  const strategyScore = strategy === "event-specialist" ? 78 : strategy === "consensus-fade" ? 74 : 66;
+  const flagPenalty = flags.length * 6 + (isProbe ? 10 : 0);
+  return clamp(Math.round(edgeScore * 0.4 + confidenceScore * 0.35 + strategyScore * 0.25 - flagPenalty), 1, 99);
+}
+
+function determineTradeTier(qualityScore: number, isProbe: boolean): TradeTier {
+  if (isProbe) return "Probe";
+  if (qualityScore >= 80) return "A";
+  if (qualityScore >= 66) return "B";
+  return "C";
 }
 
 function describeRationale(
@@ -1185,15 +1415,19 @@ function describeRationale(
   market: Market,
   ob: { imbalance: number; liquidity: number; spread: number },
   edge: number,
+  flags: string[],
+  qualityScore: number,
 ): string {
   return [
     capitalize(category),
     strategy.replace("-", " "),
     `edge ${pct(edge)}`,
+    `quality ${qualityScore}`,
     `imbalance ${round(ob.imbalance, 3)}`,
     `spread ${round(ob.spread, 3)}`,
     `vol ${usd(market.volume)}`,
-  ].join(" | ");
+    flags[0] ? `flag ${flags[0].toLowerCase()}` : null,
+  ].filter(Boolean).join(" | ");
 }
 
 function normalizeConviction(value: unknown): Conviction {
@@ -1226,6 +1460,12 @@ function demoSnapshot(detail: string): Snapshot {
       category: "macro",
       strategy: "consensus-fade",
       rationale: "Macro | consensus fade | seeded review data",
+      quality_score: 82,
+      market_quality: 76,
+      setup_quality: 88,
+      trade_tier: "A",
+      flags: [],
+      is_probe: false,
     },
     {
       condition_id: "newsom-2028-before-labor-day",
@@ -1246,6 +1486,12 @@ function demoSnapshot(detail: string): Snapshot {
       category: "politics",
       strategy: "consensus-fade",
       rationale: "Politics | consensus fade | seeded review data",
+      quality_score: 71,
+      market_quality: 69,
+      setup_quality: 74,
+      trade_tier: "B",
+      flags: ["Headline risk"],
+      is_probe: false,
     },
     {
       condition_id: "cannes-palme-first-time-winner",
@@ -1266,16 +1512,25 @@ function demoSnapshot(detail: string): Snapshot {
       category: "awards",
       strategy: "event-specialist",
       rationale: "Awards | event specialist | seeded review data",
+      quality_score: 64,
+      market_quality: 62,
+      setup_quality: 66,
+      trade_tier: "C",
+      flags: ["Seasonal liquidity"],
+      is_probe: false,
     },
   ];
 
   return {
     updatedAt,
+    preset: "balanced",
     threshold: "7.00%",
     balance: "$100.00",
     bestEdge: "8.40%",
     avgEdge: "7.27%",
     signalCount: signals.length,
+    strictSignalCount: signals.length,
+    probeSignalCount: 0,
     marketCount: 3,
     confidence: "73/99",
     maxPosition: "$25.00",
@@ -1438,6 +1693,10 @@ function normalizeWatchSignal(value: string): string {
     .trim();
 }
 
+function parsePreset(value: string | null): ScanPreset {
+  return value === "strict" || value === "discovery" ? value : "balanced";
+}
+
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
@@ -1457,6 +1716,95 @@ function clamp(value: number, min: number, max: number): number {
 function round(value: number, precision: number): number {
   const scale = 10 ** precision;
   return Math.round(value * scale) / scale;
+}
+
+function daysUntil(raw?: string): number {
+  if (!raw) return Number.NaN;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return Number.NaN;
+  return (date.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+}
+
+function buildAnalytics(results: ResultsState): AnalyticsState {
+  const allBets = [...(results.recent ?? []), ...(results.open ?? [])];
+  const open = allBets.filter((bet) => bet.status === "open");
+  const resolved = allBets.filter((bet) => bet.status === "resolved");
+  const probeOpenCount = open.filter((bet) => (bet.confidence ?? 0) <= 40).length;
+
+  return {
+    updatedAt: formatTimestamp(new Date()),
+    summary: {
+      totalBets: allBets.length,
+      resolvedBets: resolved.length,
+      openBets: open.length,
+      openExposure: round(open.reduce((sum, bet) => sum + (bet.sizeUsdc ?? 0), 0), 2),
+      avgOpenEdge: round(open.length ? open.reduce((sum, bet) => sum + (bet.edge ?? 0), 0) / open.length : 0, 4),
+      avgResolvedPnl: round(resolved.length ? resolved.reduce((sum, bet) => sum + (bet.pnl ?? 0), 0) / resolved.length : 0, 2),
+      strictOpenCount: open.length - probeOpenCount,
+      probeOpenCount,
+    },
+    byCategory: summarizeBuckets(allBets, (bet) => bet.category ?? "other"),
+    byStrategy: summarizeBuckets(allBets, (bet) => bet.strategy ?? "unknown"),
+    byPriceBand: summarizeBuckets(allBets, (bet) => priceBandFor(bet.entryPrice ?? 0)),
+    insights: buildInsights(allBets, open, resolved),
+  };
+}
+
+function summarizeBuckets(bets: PaperBet[], getKey: (bet: PaperBet) => string): AnalyticsBucket[] {
+  const buckets = new Map<string, PaperBet[]>();
+  for (const bet of bets) {
+    const key = getKey(bet);
+    const current = buckets.get(key) ?? [];
+    current.push(bet);
+    buckets.set(key, current);
+  }
+
+  return [...buckets.entries()]
+    .map(([key, rows]) => {
+      const open = rows.filter((bet) => bet.status === "open");
+      const resolved = rows.filter((bet) => bet.status === "resolved");
+      const wins = resolved.filter((bet) => (bet.pnl ?? 0) > 0).length;
+      return {
+        key,
+        totalBets: rows.length,
+        openBets: open.length,
+        resolvedBets: resolved.length,
+        wins,
+        winRate: resolved.length ? wins / resolved.length : 0,
+        totalPnl: round(resolved.reduce((sum, bet) => sum + (bet.pnl ?? 0), 0), 2),
+        exposure: round(open.reduce((sum, bet) => sum + (bet.sizeUsdc ?? 0), 0), 2),
+        avgEdge: round(rows.reduce((sum, bet) => sum + (bet.edge ?? 0), 0) / rows.length, 4),
+      } satisfies AnalyticsBucket;
+    })
+    .sort((a, b) => b.totalPnl - a.totalPnl || b.exposure - a.exposure || b.totalBets - a.totalBets);
+}
+
+function priceBandFor(entryPrice: number): string {
+  if (entryPrice < 0.1) return "<0.10";
+  if (entryPrice < 0.25) return "0.10-0.24";
+  if (entryPrice < 0.5) return "0.25-0.49";
+  if (entryPrice < 0.75) return "0.50-0.74";
+  return "0.75+";
+}
+
+function buildInsights(allBets: PaperBet[], open: PaperBet[], resolved: PaperBet[]): string[] {
+  const bestCategory = summarizeBuckets(allBets, (bet) => bet.category ?? "other")[0];
+  const bestStrategy = summarizeBuckets(allBets, (bet) => bet.strategy ?? "unknown")[0];
+  const insights = [
+    open.length
+      ? `Open exposure is ${usd(open.reduce((sum, bet) => sum + (bet.sizeUsdc ?? 0), 0))}; keep sizing capped until resolved P&L is real.`
+      : "No open exposure right now; the desk is passing rather than forcing entries.",
+    bestCategory
+      ? `${capitalize(bestCategory.key)} currently leads the book by P&L/exposure mix.`
+      : "No category edge is proven yet.",
+    bestStrategy
+      ? `${bestStrategy.key} is the most active strategy lane so far.`
+      : "No strategy lane is active yet.",
+    resolved.length
+      ? `Average realized P&L per resolved bet is ${usd(resolved.reduce((sum, bet) => sum + (bet.pnl ?? 0), 0) / resolved.length)}.`
+      : "Resolved-history depth is still too thin; keep learning before sizing up.",
+  ];
+  return insights;
 }
 
 async function cacheJson(store: KVNamespace, key: string, payload: unknown, ttlSeconds: number): Promise<void> {

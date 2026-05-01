@@ -1,10 +1,32 @@
+const STORAGE_KEYS = {
+  preset: "moneyflow:preset",
+  minQuality: "moneyflow:minQuality",
+  approved: "moneyflow:approved",
+  muted: "moneyflow:muted",
+};
+
+const appState = {
+  preset: loadString(STORAGE_KEYS.preset, "strict"),
+  minQuality: loadNumber(STORAGE_KEYS.minQuality, 60),
+  approved: new Set(loadArray(STORAGE_KEYS.approved)),
+  muted: new Set(loadArray(STORAGE_KEYS.muted)),
+  snapshot: null,
+  history: [],
+  research: null,
+  results: null,
+  analytics: null,
+};
+
 const fallbackSnapshot = {
   updatedAt: "May 01, 2026, 10:40 UTC",
+  preset: "strict",
   threshold: "7.00%",
   balance: "$100.00",
   bestEdge: "8.40%",
   avgEdge: "7.27%",
   signalCount: 3,
+  strictSignalCount: 3,
+  probeSignalCount: 0,
   marketCount: 3,
   confidence: "73/99",
   maxPosition: "$25.00",
@@ -15,6 +37,7 @@ const fallbackSnapshot = {
   signals: [
     {
       market: "Will the Fed cut rates before September?",
+      slug: "fed-cut-before-september",
       side: "YES",
       edge: 0.084,
       size_usdc: 25,
@@ -22,9 +45,16 @@ const fallbackSnapshot = {
       category: "macro",
       strategy: "consensus-fade",
       rationale: "Macro | consensus fade | fading an over-extended rates narrative",
+      quality_score: 82,
+      market_quality: 76,
+      setup_quality: 88,
+      trade_tier: "A",
+      flags: [],
+      is_probe: false,
     },
     {
       market: "Will Gavin Newsom enter the 2028 race before Labor Day?",
+      slug: "newsom-2028-before-labor-day",
       side: "NO",
       edge: 0.071,
       size_usdc: 18.5,
@@ -32,9 +62,16 @@ const fallbackSnapshot = {
       category: "politics",
       strategy: "consensus-fade",
       rationale: "Politics | consensus fade | procedural reality lags headline momentum",
+      quality_score: 71,
+      market_quality: 69,
+      setup_quality: 74,
+      trade_tier: "B",
+      flags: ["Headline risk"],
+      is_probe: false,
     },
     {
       market: "Will Cannes Palme d'Or go to a first-time winner?",
+      slug: "cannes-palme-first-time-winner",
       side: "YES",
       edge: 0.063,
       size_usdc: 14,
@@ -42,6 +79,12 @@ const fallbackSnapshot = {
       category: "awards",
       strategy: "event-specialist",
       rationale: "Awards | event specialist | specialist information edge around festival reactions",
+      quality_score: 64,
+      market_quality: 62,
+      setup_quality: 66,
+      trade_tier: "C",
+      flags: ["Seasonal liquidity"],
+      is_probe: false,
     },
   ],
   markets: [
@@ -119,23 +162,60 @@ const fallbackResults = {
       market: "Will the Fed cut rates before September?",
       side: "YES",
       category: "macro",
+      strategy: "consensus-fade",
+      edge: 0.084,
       entryPrice: 0.53,
       sizeUsdc: 25,
       status: "resolved",
       pnl: 6.1,
+      confidence: 84,
     },
     {
       openedAt: "Apr 28, 2026, 14:05 UTC",
       market: "Will Gavin Newsom enter the 2028 race before Labor Day?",
       side: "NO",
       category: "politics",
+      strategy: "consensus-fade",
+      edge: 0.071,
       entryPrice: 0.62,
       sizeUsdc: 18.5,
       status: "open",
       pnl: 0,
+      confidence: 71,
     },
   ],
   open: [],
+};
+
+const fallbackAnalytics = {
+  updatedAt: "May 01, 2026, 10:40 UTC",
+  summary: {
+    totalBets: 12,
+    resolvedBets: 8,
+    openBets: 4,
+    openExposure: 43.5,
+    avgOpenEdge: 0.071,
+    avgResolvedPnl: 2.3,
+    strictOpenCount: 3,
+    probeOpenCount: 1,
+  },
+  byCategory: [
+    { key: "macro", totalBets: 5, openBets: 1, resolvedBets: 4, wins: 3, winRate: 0.75, totalPnl: 9.8, exposure: 25, avgEdge: 0.082 },
+    { key: "politics", totalBets: 4, openBets: 2, resolvedBets: 2, wins: 1, winRate: 0.5, totalPnl: 4.1, exposure: 18.5, avgEdge: 0.071 },
+    { key: "awards", totalBets: 3, openBets: 1, resolvedBets: 2, wins: 1, winRate: 0.5, totalPnl: 4.5, exposure: 0, avgEdge: 0.063 },
+  ],
+  byStrategy: [
+    { key: "consensus-fade", totalBets: 8, openBets: 3, resolvedBets: 5, wins: 4, winRate: 0.8, totalPnl: 13.9, exposure: 31, avgEdge: 0.079 },
+    { key: "event-specialist", totalBets: 3, openBets: 1, resolvedBets: 2, wins: 1, winRate: 0.5, totalPnl: 4.5, exposure: 12.5, avgEdge: 0.063 },
+    { key: "liquidity-reversion", totalBets: 1, openBets: 0, resolvedBets: 1, wins: 0, winRate: 0, totalPnl: 0, exposure: 0, avgEdge: 0.03 },
+  ],
+  byPriceBand: [],
+  insights: [
+    "Open exposure is capped while resolved history is still thin.",
+    "Macro is leading the current book quality.",
+    "Consensus-fade is the strongest lane so far.",
+    "The desk should still size cautiously until more bets resolve.",
+  ],
 };
 
 const fallbackSourcePreview = {
@@ -144,6 +224,39 @@ const fallbackSourcePreview = {
   description: "Select a citation from the research queue to inspect the linked source directly.",
   excerpt: "",
 };
+
+function loadString(key, fallback) {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function loadNumber(key, fallback) {
+  const value = Number.parseInt(loadString(key, String(fallback)), 10);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function loadArray(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveString(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+
+function saveArray(key, values) {
+  try {
+    localStorage.setItem(key, JSON.stringify([...values]));
+  } catch {}
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -167,18 +280,50 @@ function percent(value) {
   return typeof value === "number" ? `${(value * 100).toFixed(2)}%` : value;
 }
 
+function signalKey(signal) {
+  return `${signal.slug ?? signal.market}:${signal.side}:${signal.strategy}`;
+}
+
+function isApproved(signal) {
+  return appState.approved.has(signalKey(signal));
+}
+
+function isMuted(signal) {
+  return appState.muted.has(signalKey(signal));
+}
+
+function filteredSignals(snapshot) {
+  return (snapshot?.signals ?? []).filter((signal) => !isMuted(signal) && (signal.quality_score ?? 0) >= appState.minQuality);
+}
+
+function renderOperatorState(snapshot) {
+  const approvedVisible = (snapshot?.signals ?? []).filter(isApproved).length;
+  const mutedVisible = (snapshot?.signals ?? []).filter(isMuted).length;
+  text("[data-current-preset]", capitalize(appState.preset));
+  text("[data-quality-value]", String(appState.minQuality));
+  text("[data-approved-count]", `${approvedVisible} approved`);
+  text("[data-muted-count]", `${mutedVisible} muted`);
+  document.querySelectorAll("[data-preset]").forEach((button) => {
+    button.classList.toggle("preset-active", button.getAttribute("data-preset") === appState.preset);
+  });
+}
+
 function renderSnapshot(snapshot) {
+  appState.snapshot = snapshot;
+  const visibleSignals = filteredSignals(snapshot);
   text("[data-updated]", `Updated ${snapshot.updatedAt}`);
   text("[data-updated-inline]", snapshot.updatedAt);
   text("[data-pill]", snapshot.pill);
   text("[data-best-edge]", snapshot.bestEdge ?? percent(snapshot.signals?.[0]?.edge ?? 0));
   text("[data-average-edge]", snapshot.avgEdge);
-  text("[data-signal-count]", String(snapshot.signalCount));
+  text("[data-signal-count]", String(visibleSignals.length));
+  text("[data-strict-probe]", `${snapshot.strictSignalCount ?? 0} / ${snapshot.probeSignalCount ?? 0}`);
   text("[data-market-count]", String(snapshot.marketCount));
   text("[data-confidence]", snapshot.confidence);
   text("[data-max-position]", snapshot.maxPosition);
   text("[data-threshold]", snapshot.threshold);
   text("[data-balance]", snapshot.balance);
+  renderOperatorState(snapshot);
 
   const banner = document.getElementById("banner-text");
   if (banner) {
@@ -186,22 +331,22 @@ function renderSnapshot(snapshot) {
       ? "Serving seeded demo data while the live scan or research layer warms up."
       : snapshot.stale
         ? "Serving the last successful stored snapshot while live upstream data recovers."
-        : "Live scan complete. Signals are filtered to politics, macro, and awards only.";
+        : `Live ${capitalize(appState.preset)} scan complete. Visible rows are filtered by your quality floor and mute list.`;
   }
 
   const signalsBody = document.getElementById("signals-body");
   if (!signalsBody) return;
 
-  if (!snapshot.signals?.length) {
+  if (!visibleSignals.length) {
     signalsBody.innerHTML = `
       <tr>
-        <td colspan="8" class="empty-state">
-          No paper trade is above threshold right now. The desk is still useful because the research board and focused market list stay live.
+        <td colspan="10" class="empty-state">
+          No visible idea clears your current quality floor in ${escapeHtml(appState.preset)} mode. That is acceptable if the desk is protecting capital.
         </td>
       </tr>
     `;
   } else {
-    signalsBody.innerHTML = snapshot.signals
+    signalsBody.innerHTML = visibleSignals
       .map(
         (signal) => `
         <tr>
@@ -209,15 +354,38 @@ function renderSnapshot(snapshot) {
           <td><span class="cell-chip">${escapeHtml(signal.category)}</span></td>
           <td>${escapeHtml(signal.strategy)}</td>
           <td class="${signal.side === "YES" ? "side-yes" : "side-no"}">${escapeHtml(signal.side)}</td>
+          <td><span class="tier tier-${String(signal.trade_tier).toLowerCase()}">${escapeHtml(signal.trade_tier)}</span></td>
           <td>${percent(signal.edge)}</td>
+          <td>
+            <strong>${escapeHtml(String(signal.quality_score ?? "—"))}</strong>
+            <div class="quality-breakdown">M ${escapeHtml(String(signal.market_quality ?? "—"))} / S ${escapeHtml(String(signal.setup_quality ?? "—"))}</div>
+          </td>
           <td>${money(signal.size_usdc)}</td>
           <td>${escapeHtml(signal.expiry)}</td>
-          <td>${escapeHtml(signal.rationale ?? "—")}</td>
+          <td>
+            <div>${escapeHtml(signal.rationale ?? "—")}</div>
+            <div class="flag-list">${(signal.flags ?? []).map((flag) => `<span class="watch-chip">${escapeHtml(flag)}</span>`).join("")}</div>
+          </td>
+          <td>
+            <div class="action-stack">
+              <button class="mini-button ${isApproved(signal) ? "mini-active" : ""}" type="button" data-approve="${escapeHtml(signalKey(signal))}">
+                ${isApproved(signal) ? "Approved" : "Approve"}
+              </button>
+              <button class="mini-button" type="button" data-mute="${escapeHtml(signalKey(signal))}">Mute</button>
+            </div>
+          </td>
         </tr>
-      `
+      `,
       )
       .join("");
   }
+
+  document.querySelectorAll("[data-approve]").forEach((button) => {
+    button.addEventListener("click", () => toggleApproval(button.getAttribute("data-approve")));
+  });
+  document.querySelectorAll("[data-mute]").forEach((button) => {
+    button.addEventListener("click", () => muteSignal(button.getAttribute("data-mute")));
+  });
 
   const scannerList = document.getElementById("scanner-list");
   if (scannerList) {
@@ -234,7 +402,7 @@ function renderSnapshot(snapshot) {
             <strong>${escapeHtml(market.volume)}</strong>
           </div>
         </article>
-      `
+      `,
       )
       .join("");
   }
@@ -253,13 +421,14 @@ function renderSnapshot(snapshot) {
             <span>${escapeHtml(event.time)}</span>
           </div>
         </article>
-      `
+      `,
       )
       .join("");
   }
 }
 
 function renderResearch(research) {
+  appState.research = research;
   text("[data-research-updated]", research.updatedAt ?? "—");
 
   const researchFeed = document.getElementById("research-feed");
@@ -294,12 +463,12 @@ function renderResearch(research) {
               >
                 ${escapeHtml(citation.source)}
               </button>
-            `
+            `,
             )
             .join("")}
         </div>
       </article>
-    `
+    `,
     )
     .join("");
 
@@ -325,12 +494,13 @@ function renderResearch(research) {
         <p class="strategy-copy">${escapeHtml(brief.headline)}</p>
         <p class="strategy-risk">${escapeHtml(brief.risk)}</p>
       </article>
-    `
+    `,
     )
     .join("");
 }
 
 function renderHistory(history) {
+  appState.history = history;
   const historyTable = document.getElementById("history-table");
   if (!historyTable) return;
   historyTable.innerHTML = (history ?? [])
@@ -343,12 +513,13 @@ function renderHistory(history) {
         <td>${escapeHtml(String(item.marketCount))}</td>
         <td>${item.demoMode ? "Demo" : "Live"}</td>
       </tr>
-    `
+    `,
     )
     .join("");
 }
 
 function renderResults(results) {
+  appState.results = results;
   const summary = results?.summary ?? fallbackResults.summary;
   text("[data-total-bets]", String(summary.totalBets ?? 0));
   text("[data-resolved-bets]", String(summary.resolvedBets ?? 0));
@@ -382,6 +553,49 @@ function renderResults(results) {
         <td>${money(bet.sizeUsdc ?? 0)}</td>
         <td>${escapeHtml(bet.status ?? "open")}</td>
         <td class="${(bet.pnl ?? 0) >= 0 ? "pnl-positive" : "pnl-negative"}">${money(bet.pnl ?? 0)}</td>
+      </tr>
+    `,
+    )
+    .join("");
+}
+
+function renderAnalytics(analytics) {
+  appState.analytics = analytics;
+  const summary = analytics?.summary ?? fallbackAnalytics.summary;
+  const summaryNode = document.getElementById("analytics-summary");
+  if (summaryNode) {
+    summaryNode.innerHTML = `
+      <article class="mini-stat"><span class="metric-label">Open exposure</span><strong>${money(summary.openExposure ?? 0)}</strong></article>
+      <article class="mini-stat"><span class="metric-label">Avg open edge</span><strong>${percent(summary.avgOpenEdge ?? 0)}</strong></article>
+      <article class="mini-stat"><span class="metric-label">Avg resolved P&amp;L</span><strong>${money(summary.avgResolvedPnl ?? 0)}</strong></article>
+      <article class="mini-stat"><span class="metric-label">Strict / Probe open</span><strong>${summary.strictOpenCount ?? 0} / ${summary.probeOpenCount ?? 0}</strong></article>
+    `;
+  }
+
+  const insights = document.getElementById("insight-list");
+  if (insights) {
+    insights.innerHTML = (analytics?.insights ?? fallbackAnalytics.insights)
+      .map((item) => `<article class="insight-item">${escapeHtml(item)}</article>`)
+      .join("");
+  }
+
+  renderBucketTable("analytics-category-table", analytics?.byCategory ?? fallbackAnalytics.byCategory);
+  renderBucketTable("analytics-strategy-table", analytics?.byStrategy ?? fallbackAnalytics.byStrategy);
+}
+
+function renderBucketTable(id, rows) {
+  const table = document.getElementById(id);
+  if (!table) return;
+  table.innerHTML = (rows ?? [])
+    .slice(0, 6)
+    .map(
+      (row) => `
+      <tr>
+        <td>${escapeHtml(row.key)}</td>
+        <td>${escapeHtml(String(row.totalBets))}</td>
+        <td>${escapeHtml(String(row.openBets))}</td>
+        <td>${percent(row.winRate ?? 0)}</td>
+        <td class="${(row.totalPnl ?? 0) >= 0 ? "pnl-positive" : "pnl-negative"}">${money(row.totalPnl ?? 0)}</td>
       </tr>
     `,
     )
@@ -440,6 +654,24 @@ async function loadSourcePreview(url, label) {
   }
 }
 
+function toggleApproval(key) {
+  if (!key) return;
+  if (appState.approved.has(key)) {
+    appState.approved.delete(key);
+  } else {
+    appState.approved.add(key);
+  }
+  saveArray(STORAGE_KEYS.approved, appState.approved);
+  renderSnapshot(appState.snapshot ?? fallbackSnapshot);
+}
+
+function muteSignal(key) {
+  if (!key) return;
+  appState.muted.add(key);
+  saveArray(STORAGE_KEYS.muted, appState.muted);
+  renderSnapshot(appState.snapshot ?? fallbackSnapshot);
+}
+
 async function fetchJson(url) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -450,37 +682,42 @@ async function fetchJson(url) {
 
 async function loadAll() {
   try {
-    const [snapshot, historyPayload, research, results] = await Promise.all([
-      fetchJson("/api/snapshot"),
+    const [snapshot, historyPayload, research, results, analytics] = await Promise.all([
+      fetchJson(`/api/snapshot?preset=${encodeURIComponent(appState.preset)}`),
       fetchJson("/api/history"),
       fetchJson("/api/research"),
       fetchJson("/api/results"),
+      fetchJson("/api/analytics"),
     ]);
 
     renderSnapshot(snapshot);
     renderHistory(historyPayload.history ?? []);
     renderResearch(research);
     renderResults(results);
+    renderAnalytics(analytics);
   } catch {
     renderSnapshot(fallbackSnapshot);
     renderHistory([]);
     renderResearch(fallbackResearch);
     renderResults(fallbackResults);
+    renderAnalytics(fallbackAnalytics);
   }
 }
 
 document.getElementById("refresh-scan")?.addEventListener("click", async () => {
   try {
-    const payload = await fetchJson("/api/scan");
+    const payload = await fetchJson(`/api/scan?preset=${encodeURIComponent(appState.preset)}`);
     renderSnapshot(payload.snapshot ?? fallbackSnapshot);
     renderResearch(payload.research ?? fallbackResearch);
     renderResults(payload.results ?? fallbackResults);
+    renderAnalytics(payload.analytics ?? fallbackAnalytics);
     const history = await fetchJson("/api/history");
     renderHistory(history.history ?? []);
   } catch {
     renderSnapshot(fallbackSnapshot);
     renderResearch(fallbackResearch);
     renderResults(fallbackResults);
+    renderAnalytics(fallbackAnalytics);
   }
 });
 
@@ -493,9 +730,29 @@ document.getElementById("refresh-research")?.addEventListener("click", async () 
   }
 });
 
+document.querySelectorAll("[data-preset]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    appState.preset = button.getAttribute("data-preset") ?? "strict";
+    saveString(STORAGE_KEYS.preset, appState.preset);
+    await loadAll();
+  });
+});
+
+document.getElementById("quality-filter")?.addEventListener("input", (event) => {
+  const value = Number.parseInt(event.target.value, 10);
+  appState.minQuality = Number.isFinite(value) ? value : 60;
+  saveString(STORAGE_KEYS.minQuality, String(appState.minQuality));
+  renderSnapshot(appState.snapshot ?? fallbackSnapshot);
+});
+
 renderSnapshot(fallbackSnapshot);
 renderResearch(fallbackResearch);
 renderHistory([]);
 renderResults(fallbackResults);
+renderAnalytics(fallbackAnalytics);
 renderSourcePreview({ ...fallbackSourcePreview, url: "#" });
 loadAll();
+
+function capitalize(value) {
+  return String(value ?? "").charAt(0).toUpperCase() + String(value ?? "").slice(1);
+}
