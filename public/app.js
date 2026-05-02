@@ -6,8 +6,8 @@ const STORAGE_KEYS = {
 };
 
 const appState = {
-  preset: loadString(STORAGE_KEYS.preset, "strict"),
-  minQuality: loadNumber(STORAGE_KEYS.minQuality, 60),
+  preset: loadString(STORAGE_KEYS.preset, "discovery"),
+  minQuality: loadNumber(STORAGE_KEYS.minQuality, 25),
   approved: new Set(loadArray(STORAGE_KEYS.approved)),
   muted: new Set(loadArray(STORAGE_KEYS.muted)),
   snapshot: null,
@@ -16,11 +16,12 @@ const appState = {
   results: null,
   analytics: null,
   discovery: null,
+  fallbackSnapshot: null,
 };
 
 const fallbackSnapshot = {
   updatedAt: "May 01, 2026, 10:40 UTC",
-  preset: "strict",
+  preset: "discovery",
   threshold: "7.00%",
   balance: "$100.00",
   bestEdge: "8.40%",
@@ -317,29 +318,48 @@ function renderOperatorState(snapshot) {
 }
 
 function renderSnapshot(snapshot) {
-  appState.snapshot = snapshot;
-  const visibleSignals = filteredSignals(snapshot);
-  text("[data-updated]", `Updated ${snapshot.updatedAt}`);
-  text("[data-updated-inline]", snapshot.updatedAt);
-  text("[data-pill]", snapshot.pill);
-  text("[data-best-edge]", snapshot.bestEdge ?? percent(snapshot.signals?.[0]?.edge ?? 0));
-  text("[data-average-edge]", snapshot.avgEdge);
+  const activeSnapshot =
+    snapshot?.signalCount === 0 && appState.preset !== "discovery" && appState.fallbackSnapshot?.signalCount > 0
+      ? {
+          ...appState.fallbackSnapshot,
+          pill: `${capitalize(appState.preset)} is quiet. Showing discovery probes so the desk stays usable.`,
+        }
+      : snapshot;
+
+  appState.snapshot = activeSnapshot;
+  let visibleSignals = filteredSignals(activeSnapshot);
+  const relaxedProbeFallback =
+    !visibleSignals.length &&
+    (activeSnapshot?.signals?.length ?? 0) > 0 &&
+    (activeSnapshot?.preset === "discovery" || activeSnapshot?.signals?.every((signal) => signal.is_probe));
+  if (relaxedProbeFallback) {
+    visibleSignals = activeSnapshot.signals.slice(0, 6);
+  }
+  text("[data-updated]", `Updated ${activeSnapshot.updatedAt}`);
+  text("[data-updated-inline]", activeSnapshot.updatedAt);
+  text("[data-pill]", activeSnapshot.pill);
+  text("[data-best-edge]", activeSnapshot.bestEdge ?? percent(activeSnapshot.signals?.[0]?.edge ?? 0));
+  text("[data-average-edge]", activeSnapshot.avgEdge);
   text("[data-signal-count]", String(visibleSignals.length));
-  text("[data-strict-probe]", `${snapshot.strictSignalCount ?? 0} / ${snapshot.probeSignalCount ?? 0}`);
-  text("[data-market-count]", String(snapshot.marketCount));
-  text("[data-confidence]", snapshot.confidence);
-  text("[data-max-position]", snapshot.maxPosition);
-  text("[data-threshold]", snapshot.threshold);
-  text("[data-balance]", snapshot.balance);
-  renderOperatorState(snapshot);
+  text("[data-strict-probe]", `${activeSnapshot.strictSignalCount ?? 0} / ${activeSnapshot.probeSignalCount ?? 0}`);
+  text("[data-market-count]", String(activeSnapshot.marketCount));
+  text("[data-confidence]", activeSnapshot.confidence);
+  text("[data-max-position]", activeSnapshot.maxPosition);
+  text("[data-threshold]", activeSnapshot.threshold);
+  text("[data-balance]", activeSnapshot.balance);
+  renderOperatorState(activeSnapshot);
 
   const banner = document.getElementById("banner-text");
   if (banner) {
-    banner.textContent = snapshot.demoMode
+    banner.textContent = activeSnapshot.demoMode
       ? "Serving seeded demo data while the live scan or research layer warms up."
-      : snapshot.stale
+      : activeSnapshot.stale
         ? "Serving the last successful stored snapshot while live upstream data recovers."
-        : `Live ${capitalize(appState.preset)} scan complete. Visible rows are filtered by your quality floor and mute list.`;
+        : snapshot?.signalCount === 0 && appState.preset !== "discovery" && appState.fallbackSnapshot?.signalCount > 0
+          ? `Live ${capitalize(appState.preset)} scan found no qualified ideas, so discovery probes are shown instead.`
+          : relaxedProbeFallback
+            ? "Discovery probes are shown even though they sit below your current quality floor, so the desk does not appear empty."
+          : `Live ${capitalize(appState.preset)} scan complete. Visible rows are filtered by your quality floor and mute list.`;
   }
 
   const signalsBody = document.getElementById("signals-body");
@@ -397,7 +417,7 @@ function renderSnapshot(snapshot) {
 
   const scannerList = document.getElementById("scanner-list");
   if (scannerList) {
-    scannerList.innerHTML = (snapshot.markets ?? [])
+    scannerList.innerHTML = (activeSnapshot.markets ?? [])
       .map(
         (market) => `
         <article class="stack-item">
@@ -417,7 +437,7 @@ function renderSnapshot(snapshot) {
 
   const activityList = document.getElementById("activity-list");
   if (activityList) {
-    activityList.innerHTML = (snapshot.activity ?? [])
+    activityList.innerHTML = (activeSnapshot.activity ?? [])
       .map(
         (event) => `
         <article class="stack-item">
@@ -734,8 +754,9 @@ async function fetchJson(url) {
 async function loadAll() {
   try {
     const discoveryQuery = document.getElementById("discovery-query")?.value?.trim() || "election";
-    const [snapshot, historyPayload, research, results, analytics, discovery] = await Promise.all([
+    const [snapshot, fallbackSnapshot, historyPayload, research, results, analytics, discovery] = await Promise.all([
       fetchJson(`/api/snapshot?preset=${encodeURIComponent(appState.preset)}`),
+      appState.preset === "discovery" ? Promise.resolve(null) : fetchJson("/api/snapshot?preset=discovery"),
       fetchJson("/api/history"),
       fetchJson("/api/research"),
       fetchJson("/api/results"),
@@ -743,6 +764,7 @@ async function loadAll() {
       fetchJson(`/api/discovery?q=${encodeURIComponent(discoveryQuery)}`),
     ]);
 
+    appState.fallbackSnapshot = fallbackSnapshot;
     renderSnapshot(snapshot);
     renderHistory(historyPayload.history ?? []);
     renderResearch(research);
@@ -750,6 +772,7 @@ async function loadAll() {
     renderAnalytics(analytics);
     renderDiscovery(discovery);
   } catch {
+    appState.fallbackSnapshot = null;
     renderSnapshot(fallbackSnapshot);
     renderHistory([]);
     renderResearch(fallbackResearch);
@@ -761,7 +784,11 @@ async function loadAll() {
 
 document.getElementById("refresh-scan")?.addEventListener("click", async () => {
   try {
-    const payload = await fetchJson(`/api/scan?preset=${encodeURIComponent(appState.preset)}`);
+    const [payload, fallbackSnapshot] = await Promise.all([
+      fetchJson(`/api/scan?preset=${encodeURIComponent(appState.preset)}`),
+      appState.preset === "discovery" ? Promise.resolve(null) : fetchJson("/api/snapshot?preset=discovery"),
+    ]);
+    appState.fallbackSnapshot = fallbackSnapshot;
     renderSnapshot(payload.snapshot ?? fallbackSnapshot);
     renderResearch(payload.research ?? fallbackResearch);
     renderResults(payload.results ?? fallbackResults);
@@ -769,6 +796,7 @@ document.getElementById("refresh-scan")?.addEventListener("click", async () => {
     const history = await fetchJson("/api/history");
     renderHistory(history.history ?? []);
   } catch {
+    appState.fallbackSnapshot = null;
     renderSnapshot(fallbackSnapshot);
     renderResearch(fallbackResearch);
     renderResults(fallbackResults);
