@@ -15,6 +15,7 @@ const appState = {
   research: null,
   results: null,
   analytics: null,
+  discovery: null,
 };
 
 const fallbackSnapshot = {
@@ -216,6 +217,13 @@ const fallbackAnalytics = {
     "Consensus-fade is the strongest lane so far.",
     "The desk should still size cautiously until more bets resolve.",
   ],
+};
+
+const fallbackDiscovery = {
+  query: "election",
+  updatedAt: "May 02, 2026, 09:00 UTC",
+  source: "demo",
+  results: [],
 };
 
 const fallbackSourcePreview = {
@@ -583,6 +591,49 @@ function renderAnalytics(analytics) {
   renderBucketTable("analytics-strategy-table", analytics?.byStrategy ?? fallbackAnalytics.byStrategy);
 }
 
+function renderDiscovery(discovery) {
+  appState.discovery = discovery;
+  const node = document.getElementById("discovery-results");
+  if (!node) return;
+
+  const rows = discovery?.results ?? [];
+  if (!rows.length) {
+    node.innerHTML = `
+      <article class="stack-item">
+        <div>
+          <p class="stack-title">No discovery results</p>
+          <p class="stack-detail">Gamma public search did not return active events for this query.</p>
+        </div>
+        <div class="stack-meta">
+          <span>${escapeHtml(discovery?.query ?? "search")}</span>
+        </div>
+      </article>
+    `;
+    return;
+  }
+
+  node.innerHTML = rows
+    .map(
+      (item) => `
+      <article class="stack-item discovery-item">
+        <div>
+          <p class="stack-title">${escapeHtml(item.title)}</p>
+          <p class="stack-detail">${escapeHtml((item.context || item.description || "").slice(0, 220))}</p>
+          <div class="flag-list">
+            ${(item.tags ?? []).slice(0, 4).map((tag) => `<span class="watch-chip">${escapeHtml(tag)}</span>`).join("")}
+          </div>
+        </div>
+        <div class="stack-meta">
+          <span>${money(item.volume24hr ?? 0)} 24h</span>
+          <strong>${money(item.volume ?? 0)} vol</strong>
+          <a href="${escapeHtml(item.eventUrl)}" target="_blank" rel="noreferrer">Open</a>
+        </div>
+      </article>
+    `,
+    )
+    .join("");
+}
+
 function renderBucketTable(id, rows) {
   const table = document.getElementById(id);
   if (!table) return;
@@ -682,12 +733,14 @@ async function fetchJson(url) {
 
 async function loadAll() {
   try {
-    const [snapshot, historyPayload, research, results, analytics] = await Promise.all([
+    const discoveryQuery = document.getElementById("discovery-query")?.value?.trim() || "election";
+    const [snapshot, historyPayload, research, results, analytics, discovery] = await Promise.all([
       fetchJson(`/api/snapshot?preset=${encodeURIComponent(appState.preset)}`),
       fetchJson("/api/history"),
       fetchJson("/api/research"),
       fetchJson("/api/results"),
       fetchJson("/api/analytics"),
+      fetchJson(`/api/discovery?q=${encodeURIComponent(discoveryQuery)}`),
     ]);
 
     renderSnapshot(snapshot);
@@ -695,12 +748,14 @@ async function loadAll() {
     renderResearch(research);
     renderResults(results);
     renderAnalytics(analytics);
+    renderDiscovery(discovery);
   } catch {
     renderSnapshot(fallbackSnapshot);
     renderHistory([]);
     renderResearch(fallbackResearch);
     renderResults(fallbackResults);
     renderAnalytics(fallbackAnalytics);
+    renderDiscovery(fallbackDiscovery);
   }
 }
 
@@ -730,6 +785,16 @@ document.getElementById("refresh-research")?.addEventListener("click", async () 
   }
 });
 
+document.getElementById("run-discovery")?.addEventListener("click", async () => {
+  const query = document.getElementById("discovery-query")?.value?.trim() || "election";
+  try {
+    const discovery = await fetchJson(`/api/discovery?q=${encodeURIComponent(query)}`);
+    renderDiscovery(discovery);
+  } catch {
+    renderDiscovery({ ...fallbackDiscovery, query });
+  }
+});
+
 document.querySelectorAll("[data-preset]").forEach((button) => {
   button.addEventListener("click", async () => {
     appState.preset = button.getAttribute("data-preset") ?? "strict";
@@ -750,6 +815,7 @@ renderResearch(fallbackResearch);
 renderHistory([]);
 renderResults(fallbackResults);
 renderAnalytics(fallbackAnalytics);
+renderDiscovery(fallbackDiscovery);
 renderSourcePreview({ ...fallbackSourcePreview, url: "#" });
 loadAll();
 

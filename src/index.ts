@@ -97,6 +97,27 @@ type AnalyticsState = {
   insights: string[];
 };
 
+type DiscoveryResult = {
+  title: string;
+  slug: string;
+  eventUrl: string;
+  description: string;
+  volume: number;
+  openInterest: number;
+  liquidity: number;
+  volume24hr: number;
+  tags: string[];
+  context: string;
+  topMarket?: string;
+};
+
+type DiscoveryState = {
+  query: string;
+  updatedAt: string;
+  source: "live" | "cache" | "demo";
+  results: DiscoveryResult[];
+};
+
 type SnapshotHistoryItem = {
   id?: number | string;
   createdAt: string;
@@ -223,6 +244,7 @@ const SNAPSHOT_CACHE_KEY = "snapshot:latest";
 const RESEARCH_CACHE_KEY = "research:latest";
 const RESULTS_CACHE_KEY = "results:latest";
 const ANALYTICS_CACHE_KEY = "analytics:latest";
+const DISCOVERY_CACHE_PREFIX = "discovery:";
 const SNAPSHOT_CACHE_TTL_SECONDS = 60 * 30;
 const RESEARCH_CACHE_TTL_SECONDS = 60 * 60 * 6;
 const RESULTS_CACHE_TTL_SECONDS = 60 * 10;
@@ -280,6 +302,12 @@ export default {
     if (url.pathname === "/api/history") {
       const history = await getHistory(env);
       return json({ history });
+    }
+
+    if (url.pathname === "/api/discovery") {
+      const query = (url.searchParams.get("q") ?? "election").trim();
+      const discovery = await getDiscovery(env, query || "election");
+      return json(discovery);
     }
 
     if (url.pathname === "/api/analytics") {
@@ -1143,6 +1171,42 @@ async function getAnalytics(env: WorkerEnv): Promise<AnalyticsState> {
   return analytics;
 }
 
+async function getDiscovery(env: WorkerEnv, query: string): Promise<DiscoveryState> {
+  const normalizedQuery = query.trim().toLowerCase();
+  const cacheKey = `${DISCOVERY_CACHE_PREFIX}${normalizedQuery}`;
+  const cached = await env.SNAPSHOT_CACHE.get(cacheKey, "json");
+  if (cached) {
+    return cached as DiscoveryState;
+  }
+
+  try {
+    const params = new URLSearchParams({
+      q: normalizedQuery,
+      page: "1",
+      limit_per_type: "10",
+      type: "events",
+      events_status: "active",
+      presets: "Events",
+    });
+    const response = await fetchJsonCached(`${GAMMA_URL}/public-search?${params.toString()}`, 60 * 15);
+    const discovery = {
+      query: normalizedQuery,
+      updatedAt: formatTimestamp(new Date()),
+      source: "live",
+      results: normalizeDiscoveryPayload(response),
+    } satisfies DiscoveryState;
+    await cacheJson(env.SNAPSHOT_CACHE, cacheKey, discovery, 60 * 15);
+    return discovery;
+  } catch {
+    return {
+      query: normalizedQuery,
+      updatedAt: formatTimestamp(new Date()),
+      source: "demo",
+      results: [],
+    };
+  }
+}
+
 async function fetchResultsForAnalytics(env: WorkerEnv): Promise<ResultsState> {
   if (!env.CONVEX_SITE_URL) {
     return emptyResultsState();
@@ -1805,6 +1869,84 @@ function buildInsights(allBets: PaperBet[], open: PaperBet[], resolved: PaperBet
       : "Resolved-history depth is still too thin; keep learning before sizing up.",
   ];
   return insights;
+}
+
+function normalizeDiscoveryPayload(payload: unknown): DiscoveryResult[] {
+  const rawItems =
+    Array.isArray(payload) ? payload :
+    payload && typeof payload === "object"
+      ? Object.values(payload as Record<string, unknown>).flatMap((value) => (Array.isArray(value) ? value : []))
+      : [];
+
+  const results: DiscoveryResult[] = [];
+
+  for (const item of rawItems) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const event = normalizeDiscoveryEvent(record);
+    if (event && event.slug) {
+      results.push(event);
+    }
+  }
+
+  return dedupeDiscovery(results).slice(0, 12);
+}
+
+function normalizeDiscoveryEvent(record: Record<string, unknown>): DiscoveryResult | null {
+  const parent = asRecord(record.parentMarket) ?? asRecord(record.event) ?? record;
+  const additional = asRecord(parent.additionalFields) ?? {};
+  const metadata = asRecord(additional.eventMetadata) ?? {};
+  const firstMarket = Array.isArray(record.markets) && record.markets.length ? asRecord(record.markets[0]) : asRecord(record.market);
+  const tags = Array.isArray(additional.tags)
+    ? additional.tags
+        .map((tag) => {
+          const typed = asRecord(tag);
+          return typed?.label ? String(typed.label) : null;
+        })
+        .filter(Boolean) as string[]
+    : [];
+
+  const slug = stringOr(parent.slug);
+  const title = stringOr(parent.title) ?? stringOr(parent.question);
+  if (!slug || !title) return null;
+
+  return {
+    title,
+    slug,
+    eventUrl: stringOr(parent.eventUrl) ?? `https://polymarket.com/event/${slug}`,
+    description: stringOr(parent.description) ?? "",
+    volume: numberOr(parent.volume) ?? 0,
+    openInterest: numberOr(parent.openInterest) ?? 0,
+    liquidity: numberOr(additional.liquidity) ?? numberOr(additional.liquidityClob) ?? 0,
+    volume24hr: numberOr(additional.volume24hr) ?? 0,
+    tags,
+    context: stringOr(metadata.context_description) ?? "",
+    topMarket: stringOr(firstMarket?.question) ?? undefined,
+  };
+}
+
+function dedupeDiscovery(items: DiscoveryResult[]): DiscoveryResult[] {
+  const seen = new Set<string>();
+  const unique: DiscoveryResult[] = [];
+  for (const item of items.sort((a, b) => b.volume - a.volume || b.openInterest - a.openInterest)) {
+    if (seen.has(item.slug)) continue;
+    seen.add(item.slug);
+    unique.push(item);
+  }
+  return unique;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function stringOr(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function numberOr(value: unknown): number | null {
+  const num = typeof value === "string" ? Number.parseFloat(value) : typeof value === "number" ? value : Number.NaN;
+  return Number.isFinite(num) ? num : null;
 }
 
 async function cacheJson(store: KVNamespace, key: string, payload: unknown, ttlSeconds: number): Promise<void> {

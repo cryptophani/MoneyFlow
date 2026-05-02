@@ -232,6 +232,21 @@
           </aside>
         </section>
 
+        <section class="panel" id="discovery">
+          <div class="panel-head">
+            <div>
+              <p class="metric-label">Gamma discovery</p>
+              <h3>Public event search</h3>
+            </div>
+            <p class="panel-copy">Cloudflare fetches public Gamma search data directly, no paid scraper required.</p>
+          </div>
+          <div class="discovery-toolbar">
+            <input id="discovery-query" type="text" value="election" placeholder="Search Polymarket events" />
+            <button class="button button-secondary" id="run-discovery" type="button">Run discovery</button>
+          </div>
+          <div id="discovery-results" class="stack-list"></div>
+        </section>
+
         <section class="panel-grid">
           <article class="panel">
             <div class="panel-head">
