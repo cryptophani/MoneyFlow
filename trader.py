@@ -19,10 +19,28 @@ logger = logging.getLogger(__name__)
 
 def create_client():
     """
-    Disabled CLOB client for paper mode (no wallet needed).
+    Creates a Polymarket CLOB client when live trading is enabled.
+    Paper mode intentionally avoids wallet initialization.
     """
-    logger.info("CLOB client disabled (paper mode)")
-    return None
+    if PAPER_TRADE:
+        logger.info("CLOB client disabled (paper mode)")
+        return None
+
+    if not PRIVATE_KEY or not FUNDER:
+        raise RuntimeError("Live trading requires POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER")
+
+    from py_clob_client.client import ClobClient
+
+    client = ClobClient(
+        CLOB_HOST,
+        key=PRIVATE_KEY,
+        chain_id=CHAIN_ID,
+        signature_type=SIG_TYPE,
+        funder=FUNDER,
+    )
+    client.set_api_creds(client.create_or_derive_api_creds())
+    logger.info("CLOB client initialized for live trading")
+    return client
 
 # ── Balance Check ─────────────────────────────────────────────
 

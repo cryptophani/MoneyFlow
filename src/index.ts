@@ -6,6 +6,7 @@ type TradeTier = "A" | "B" | "C" | "Probe";
 
 type Market = {
   condition_id: string;
+  gamma_id: string;
   question: string;
   slug: string;
   yes_token_id: string;
@@ -24,10 +25,19 @@ type Signal = {
   slug: string;
   side: "YES" | "NO";
   edge: number;
+  market_prob: number;
+  expected_value: number;
+  odds_movement: number;
+  entry_timing: string;
   model_prob: number;
   entry_price: number;
+  execution_book: string;
+  best_available_price: number;
+  price_improvement: number;
+  book_count: number;
   size_usdc: number;
   expiry: string;
+  hours_to_expiry: number;
   confidence: number;
   status: string;
   volume: number;
@@ -43,6 +53,8 @@ type Signal = {
   trade_tier: TradeTier;
   flags: string[];
   is_probe: boolean;
+  risk_score: number;
+  risk_flags: string[];
 };
 
 type Snapshot = {
@@ -88,13 +100,86 @@ type AnalyticsState = {
     openExposure: number;
     avgOpenEdge: number;
     avgResolvedPnl: number;
+    roi: number;
+    maxDrawdown: number;
+    avgClv: number;
+    clvWinRate: number;
+    avgExpectedValue: number;
+    calibrationError: number;
+    stopLossActive: boolean;
+    largestCorrelationGroup: number;
     strictOpenCount: number;
     probeOpenCount: number;
   };
   byCategory: AnalyticsBucket[];
   byStrategy: AnalyticsBucket[];
   byPriceBand: AnalyticsBucket[];
+  byTimeToExpiry: AnalyticsBucket[];
   insights: string[];
+};
+
+type BacktestThreshold = {
+  minEdge: number;
+  bets: number;
+  roi: number;
+  winRate: number;
+  totalPnl: number;
+  maxDrawdown: number;
+};
+
+type StrategyBacktest = {
+  strategy: string;
+  bestMinEdge: number;
+  recommendedKellyFraction: number;
+  driftStatus: "insufficient-data" | "stable" | "watch" | "drift";
+  calibrationError: number;
+  recentRoi: number;
+  baselineRoi: number;
+  thresholds: BacktestThreshold[];
+};
+
+type BacktestState = {
+  updatedAt: string;
+  resolvedBets: number;
+  strategies: StrategyBacktest[];
+  recommendations: string[];
+};
+
+type BookQuote = {
+  book: string;
+  slug: string;
+  side: "YES" | "NO";
+  price: number;
+  deepLink?: string;
+  updatedAt?: string;
+};
+
+type BookMarketState = {
+  updatedAt: string;
+  source: "live" | "default";
+  quoteCount: number;
+  books: string[];
+  quotes: BookQuote[];
+};
+
+type ModelState = {
+  version: string;
+  trainedAt: string;
+  resolvedBets: number;
+  source: "trained" | "default";
+  categoryAdjustments: Partial<Record<MarketCategory, number>>;
+  strategyAdjustments: Partial<Record<StrategyMode, number>>;
+  edgeFloorAdjustments: Partial<Record<StrategyMode, number>>;
+  kellyFraction: number;
+  driftStatus: "insufficient-data" | "stable" | "watch" | "drift";
+  recommendations: string[];
+};
+
+type PortfolioGuard = {
+  allowNewBets: boolean;
+  severity: "clear" | "watch" | "blocked";
+  reasons: string[];
+  exposureMultiplier: number;
 };
 
 type DiscoveryResult = {
@@ -178,16 +263,29 @@ type PaperBet = {
   status: "open" | "resolved";
   confidence: number;
   edge: number;
+  marketProb?: number;
+  expectedValue?: number;
+  oddsMovement?: number;
+  entryTiming?: string;
   modelProb: number;
   entryPrice: number;
+  executionBook?: string;
+  bestAvailablePrice?: number;
+  priceImprovement?: number;
+  bookCount?: number;
   sizeUsdc: number;
   expiry: string;
+  hoursToExpiry?: number;
+  riskScore?: number;
+  riskFlags?: string[];
   openedAtTs: number;
   openedAt: string;
   resolvedAtTs?: number;
   resolvedAt?: string;
-  result?: 0 | 1;
+  result?: 0 | 0.5 | 1;
   pnl?: number;
+  closingPrice?: number;
+  clv?: number;
   resolutionSource?: string;
 };
 
@@ -229,6 +327,8 @@ type WorkerEnv = Cloudflare.Env & {
   CONVEX_SITE_URL: string;
   CONVEX_INGEST_SECRET?: string;
   EXA_API_KEY?: string;
+  EXTERNAL_ODDS_URL?: string;
+  KALSHI_MARKETS_ENABLED?: string;
   MIN_VOLUME: string;
   MIN_LIQUIDITY: string;
   KELLY_FRACTION: string;
@@ -239,17 +339,20 @@ type WorkerEnv = Cloudflare.Env & {
 
 const GAMMA_URL = "https://gamma-api.polymarket.com";
 const CLOB_URL = "https://clob.polymarket.com";
+const DATA_URL = "https://data-api.polymarket.com";
+const KALSHI_URL = "https://external-api.kalshi.com/trade-api/v2";
 const EXA_ANSWER_URL = "https://api.exa.ai/answer";
 const SNAPSHOT_CACHE_KEY = "snapshot:latest";
 const RESEARCH_CACHE_KEY = "research:latest";
 const RESULTS_CACHE_KEY = "results:latest";
 const ANALYTICS_CACHE_KEY = "analytics:latest";
+const MODEL_STATE_KEY = "model:state";
 const DISCOVERY_CACHE_PREFIX = "discovery:";
 const SNAPSHOT_CACHE_TTL_SECONDS = 60 * 30;
 const RESEARCH_CACHE_TTL_SECONDS = 60 * 60 * 6;
 const RESULTS_CACHE_TTL_SECONDS = 60 * 10;
 const ANALYTICS_CACHE_TTL_SECONDS = 60 * 10;
-const FOCUS_CATEGORIES: MarketCategory[] = ["politics", "macro", "awards"];
+const FOCUS_CATEGORIES: MarketCategory[] = ["politics", "macro", "awards", "sports"];
 
 const CATEGORY_RESEARCH_PLAN: Array<{
   category: MarketCategory;
@@ -315,6 +418,26 @@ export default {
       return json(analytics);
     }
 
+    if (url.pathname === "/api/backtest") {
+      const backtest = await getBacktest(env);
+      return json(backtest);
+    }
+
+    if (url.pathname === "/api/model") {
+      const model = await getModelState(env);
+      return json(model);
+    }
+
+    if (url.pathname === "/api/model/retrain") {
+      const model = await retrainModel(env);
+      return json(model);
+    }
+
+    if (url.pathname === "/api/books") {
+      const books = await getBookMarketState(env);
+      return json(books);
+    }
+
     if (url.pathname === "/api/source-preview") {
       const target = url.searchParams.get("url");
       if (!target) {
@@ -371,7 +494,7 @@ export default {
   },
 
   async scheduled(_controller: ScheduledController, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(Promise.all([refreshSnapshot(env), refreshResearch(env), resolveOpenPaperBets(env)]));
+    ctx.waitUntil(Promise.all([refreshSnapshot(env), refreshResearch(env), resolveOpenPaperBets(env), retrainModel(env)]));
   },
 } satisfies ExportedHandler<WorkerEnv>;
 
@@ -444,25 +567,26 @@ async function collectLiveSnapshot(env: WorkerEnv, preset: ScanPreset): Promise<
   }
 
   const walletBalance = Math.max(Number.parseFloat(env.MAX_TRADE_USDC) * 10, 100);
-  const signals: Signal[] = [];
-  const probes: Signal[] = [];
-
-  for (const market of markets) {
+  const modelState = await getModelState(env);
+  const portfolioGuard = await getPortfolioGuard(env, modelState);
+  const bookState = await getBookMarketState(env);
+  const scanned = await Promise.all(markets.map(async (market) => {
     const ob = await fetchOrderBookFeatures(market.yes_token_id);
-    const signal = generateSignal(market, ob, walletBalance, env, preset);
+    const signal = generateSignal(market, ob, walletBalance, env, preset, modelState, bookState);
     if (signal) {
-      signals.push(signal);
-    } else {
-      const probe = generateProbeSignal(market, ob, walletBalance, preset);
-      if (probe) {
-        probes.push(probe);
-      }
+      return { kind: "signal" as const, value: await enrichSignalWithTiming(signal, market) };
     }
-  }
+    const probe = generateProbeSignal(market, ob, walletBalance, preset, modelState, bookState);
+    return probe ? { kind: "probe" as const, value: await enrichSignalWithTiming(probe, market) } : null;
+  }));
+  const signals = scanned.filter((item): item is { kind: "signal"; value: Signal } => item?.kind === "signal").map((item) => item.value);
+  const probes = scanned.filter((item): item is { kind: "probe"; value: Signal } => item?.kind === "probe").map((item) => item.value);
 
   signals.sort((a, b) => b.edge - a.edge);
   probes.sort((a, b) => b.edge - a.edge);
-  const displayedSignals = signals.length ? signals : probes.slice(0, 6);
+  const riskFilteredSignals = portfolioGuard.allowNewBets ? applyPortfolioRiskControls(signals, walletBalance * portfolioGuard.exposureMultiplier) : [];
+  const riskFilteredProbes = portfolioGuard.allowNewBets ? applyPortfolioRiskControls(probes, walletBalance * 0.35 * portfolioGuard.exposureMultiplier) : [];
+  const displayedSignals = portfolioGuard.allowNewBets ? (riskFilteredSignals.length ? riskFilteredSignals : riskFilteredProbes.slice(0, 6)) : [];
   const focusMarkets = markets.filter((market) => FOCUS_CATEGORIES.includes(classifyCategory(market.question)));
   const bestEdge = displayedSignals[0]?.edge ?? 0;
   const avgEdge = displayedSignals.length ? displayedSignals.reduce((sum, signal) => sum + signal.edge, 0) / displayedSignals.length : 0;
@@ -486,9 +610,11 @@ async function collectLiveSnapshot(env: WorkerEnv, preset: ScanPreset): Promise<
     confidence: `${avgConfidence}/99`,
     maxPosition: usd(maxPosition),
     pill:
-      signals.length
-        ? `${capitalize(preset)} mode surfaced ${signals.length} qualified ideas`
-        : probes.length
+      !portfolioGuard.allowNewBets
+        ? `Risk guard blocked new entries: ${portfolioGuard.reasons.join(", ")}`
+        : riskFilteredSignals.length
+        ? `${capitalize(preset)} mode surfaced ${riskFilteredSignals.length} risk-approved ideas`
+        : riskFilteredProbes.length
           ? `${capitalize(preset)} mode is showing probe ideas only`
           : `${capitalize(preset)} mode is preserving capital and passing on weak setups`,
     source: "live",
@@ -499,7 +625,7 @@ async function collectLiveSnapshot(env: WorkerEnv, preset: ScanPreset): Promise<
       title: market.question,
       volume: usd(market.volume),
       yes: `YES ${market.yes_price.toFixed(2)}`,
-      category: classifyCategory(market.question),
+      category: `${classifyCategory(market.question)} · ${bookState.books.length || 1} book${(bookState.books.length || 1) === 1 ? "" : "s"}`,
     })),
     activity: buildActivity(displayedSignals, now, false),
   };
@@ -676,6 +802,7 @@ async function fetchActiveMarkets(env: WorkerEnv, limit: number): Promise<Market
       return [
         {
           condition_id: String(market.conditionId ?? ""),
+          gamma_id: String(market.id ?? ""),
           question: String(market.question ?? ""),
           slug: String(market.slug ?? ""),
           yes_token_id: String(tokenIds[resolvedYesIndex]),
@@ -717,12 +844,45 @@ async function fetchOrderBookFeatures(tokenId: string): Promise<{ imbalance: num
   };
 }
 
+async function fetchPriceHistory(gammaId: string, fidelity = 60): Promise<number[]> {
+  if (!gammaId) {
+    return [];
+  }
+  try {
+    const params = new URLSearchParams({ market: gammaId, fidelity: String(fidelity) });
+    const payload = (await fetchJsonCached(`${DATA_URL}/prices-history?${params.toString()}`, 60 * 5)) as { history?: Array<{ p?: number | string }> };
+    return (payload.history ?? [])
+      .map((point) => Number(point.p))
+      .filter((price) => Number.isFinite(price) && price > 0 && price < 1);
+  } catch {
+    return [];
+  }
+}
+
+async function enrichSignalWithTiming(signal: Signal, market: Market): Promise<Signal> {
+  const history = await fetchPriceHistory(market.gamma_id);
+  if (history.length < 2) {
+    return signal;
+  }
+  const first = history[0];
+  const last = history[history.length - 1];
+  const yesMovement = last - first;
+  const oddsMovement = signal.side === "YES" ? yesMovement : -yesMovement;
+  return {
+    ...signal,
+    odds_movement: round(oddsMovement, 4),
+    entry_timing: entryTimingFor(oddsMovement),
+  };
+}
+
 function generateSignal(
   market: Market,
   ob: { imbalance: number; liquidity: number; spread: number },
   walletBalance: number,
   env: WorkerEnv,
   preset: ScanPreset,
+  modelState: ModelState,
+  bookState: BookMarketState,
 ): Signal | null {
   const category = classifyCategory(market.question);
   if (!FOCUS_CATEGORIES.includes(category)) {
@@ -750,23 +910,31 @@ function generateSignal(
     return null;
   }
 
-  const modelProb = estimateModelProbability(category, strategy, market.yes_price, ob.imbalance, ob.spread);
+  const modelProb = estimateModelProbability(category, strategy, market.yes_price, ob.imbalance, ob.spread, modelState);
   const yesEdge = modelProb - market.yes_price;
   const noEdge = (1 - modelProb) - market.no_price;
   const edge = Math.max(yesEdge, noEdge);
-  const threshold = effectiveThreshold(category, Number.parseFloat(env.EDGE_THRESHOLD), preset);
+  const threshold = effectiveThreshold(category, Number.parseFloat(env.EDGE_THRESHOLD), preset) + (modelState.edgeFloorAdjustments[strategy] ?? 0);
 
   if (edge < threshold || edge > config.maxEdge) {
     return null;
   }
 
   const side = yesEdge >= noEdge ? "YES" : "NO";
-  const entryPrice = side === "YES" ? market.yes_price : market.no_price;
+  const baseEntryPrice = side === "YES" ? market.yes_price : market.no_price;
+  const execution = findBestExecution(market, side, baseEntryPrice, bookState);
+  const entryPrice = execution.price;
+  const sideModelProb = side === "YES" ? modelProb : 1 - modelProb;
+  const marketProb = entryPrice;
   const confidence = Math.min(99, Math.max(15, Math.round(edge * 1000 + categoryConfidenceBoost(category))));
-  const sizeUsdc = computeKellySize(modelProb, market.yes_price, side, walletBalance, env);
+  const sizeUsdc = computeKellySize(modelProb, market.yes_price, side, walletBalance, env, modelState);
   const setupQuality = computeSetupQuality(edge, confidence, strategy, quality.flags, false);
   const qualityScore = clamp(Math.round((quality.marketQuality * 0.55) + (setupQuality * 0.45)), 1, 99);
   const tradeTier = determineTradeTier(qualityScore, false);
+  const risk = assessExecutionRisk(market, ob, sizeUsdc, walletBalance, quality.flags, false);
+  if (risk.blocked) {
+    return null;
+  }
 
   return {
     condition_id: market.condition_id,
@@ -774,10 +942,19 @@ function generateSignal(
     slug: market.slug,
     side,
     edge: round(edge, 4),
+    market_prob: round(marketProb, 4),
+    expected_value: round(computeExpectedValue(sizeUsdc, sideModelProb, marketProb), 2),
+    odds_movement: 0,
+    entry_timing: "untracked",
     model_prob: round(modelProb, 4),
     entry_price: round(entryPrice, 3),
+    execution_book: execution.book,
+    best_available_price: round(execution.price, 3),
+    price_improvement: round(baseEntryPrice - execution.price, 4),
+    book_count: execution.bookCount,
     size_usdc: sizeUsdc,
     expiry: formatExpiry(expiryRaw),
+    hours_to_expiry: round(hoursUntil(expiryRaw), 1),
     confidence,
     status: "Active",
     volume: market.volume,
@@ -793,6 +970,8 @@ function generateSignal(
     trade_tier: tradeTier,
     flags: quality.flags,
     is_probe: false,
+    risk_score: risk.score,
+    risk_flags: risk.flags,
   };
 }
 
@@ -802,11 +981,13 @@ function estimateModelProbability(
   marketPrice: number,
   imbalance: number,
   spread: number,
+  modelState?: ModelState,
 ): number {
   const categoryBias =
     category === "macro" ? 0.24 :
     category === "politics" ? 0.18 :
     category === "awards" ? 0.14 :
+    category === "sports" ? 0.08 :
     0.1;
   const strategyBias =
     strategy === "consensus-fade" ? 0.3 :
@@ -816,11 +997,19 @@ function estimateModelProbability(
   const fadeTerm = (0.5 - marketPrice) * categoryBias;
   const orderBookTerm = imbalance * (0.025 + strategyBias / 10);
   const spreadPenalty = spread * 0.25;
+  const learnedAdjustment = (modelState?.categoryAdjustments[category] ?? 0) + (modelState?.strategyAdjustments[strategy] ?? 0);
 
-  return clamp(marketPrice + fadeTerm + orderBookTerm - spreadPenalty, 0.05, 0.95);
+  return clamp(marketPrice + fadeTerm + orderBookTerm - spreadPenalty + learnedAdjustment, 0.05, 0.95);
 }
 
-function computeKellySize(modelProb: number, marketPrice: number, side: "YES" | "NO", walletBalance: number, env: WorkerEnv): number {
+function computeKellySize(
+  modelProb: number,
+  marketPrice: number,
+  side: "YES" | "NO",
+  walletBalance: number,
+  env: WorkerEnv,
+  modelState?: ModelState,
+): number {
   if (walletBalance <= 0) {
     return 5;
   }
@@ -838,8 +1027,101 @@ function computeKellySize(modelProb: number, marketPrice: number, side: "YES" | 
     return 5;
   }
 
-  const sized = f * Number.parseFloat(env.KELLY_FRACTION) * walletBalance;
+  const liveKellyFraction = modelState?.kellyFraction ?? Number.parseFloat(env.KELLY_FRACTION);
+  const sized = f * liveKellyFraction * walletBalance;
   return round(Math.min(sized, Number.parseFloat(env.MAX_TRADE_USDC)), 2);
+}
+
+function computeExpectedValue(stake: number, winProb: number, price: number): number {
+  if (stake <= 0 || price <= 0 || price >= 1) {
+    return 0;
+  }
+  const expectedReturnPerDollar = (winProb - price) / price;
+  return stake * expectedReturnPerDollar;
+}
+
+function assessExecutionRisk(
+  market: Market,
+  ob: { imbalance: number; liquidity: number; spread: number },
+  sizeUsdc: number,
+  walletBalance: number,
+  qualityFlags: string[],
+  isProbe: boolean,
+): { score: number; flags: string[]; blocked: boolean } {
+  const flags = [...qualityFlags];
+  const positionPct = walletBalance > 0 ? sizeUsdc / walletBalance : 1;
+  const bookImpact = ob.liquidity > 0 ? sizeUsdc / ob.liquidity : 1;
+  const daysLeft = daysUntil(market.end_date_iso ?? market.end_date);
+
+  if (positionPct > 0.12) flags.push("Position cap pressure");
+  if (bookImpact > 0.015) flags.push("Slippage risk");
+  if (ob.spread > 0.1) flags.push("Execution spread risk");
+  if (Number.isFinite(daysLeft) && daysLeft < 0.25) flags.push("Resolution timing risk");
+
+  const riskScore = clamp(
+    Math.round(
+      positionPct * 260 +
+        bookImpact * 2400 +
+        ob.spread * 180 +
+        Math.abs(ob.imbalance) * 18 +
+        (isProbe ? 10 : 0) +
+        flags.length * 4,
+    ),
+    1,
+    99,
+  );
+
+  return {
+    score: riskScore,
+    flags: [...new Set(flags)].slice(0, 6),
+    blocked: !isProbe && (positionPct > 0.18 || bookImpact > 0.04 || ob.spread > 0.2),
+  };
+}
+
+function applyPortfolioRiskControls(signals: Signal[], walletBalance: number): Signal[] {
+  const maxTotalExposure = Math.max(walletBalance * 0.35, 25);
+  const maxCategoryExposure = Math.max(walletBalance * 0.18, 15);
+  const maxCorrelatedPositions = 3;
+  const categoryExposure = new Map<MarketCategory, number>();
+  const correlationCounts = new Map<string, number>();
+  let totalExposure = 0;
+  const approved: Signal[] = [];
+
+  for (const signal of signals) {
+    const nextTotalExposure = totalExposure + signal.size_usdc;
+    const nextCategoryExposure = (categoryExposure.get(signal.category) ?? 0) + signal.size_usdc;
+    const correlationKey = `${signal.category}:${signal.strategy}`;
+    const nextCorrelationCount = (correlationCounts.get(correlationKey) ?? 0) + 1;
+
+    if (nextTotalExposure > maxTotalExposure || nextCategoryExposure > maxCategoryExposure || nextCorrelationCount > maxCorrelatedPositions) {
+      continue;
+    }
+
+    approved.push(signal);
+    totalExposure = nextTotalExposure;
+    categoryExposure.set(signal.category, nextCategoryExposure);
+    correlationCounts.set(correlationKey, nextCorrelationCount);
+  }
+
+  return approved;
+}
+
+function findBestExecution(
+  market: Market,
+  side: "YES" | "NO",
+  fallbackPrice: number,
+  bookState: BookMarketState,
+): { book: string; price: number; bookCount: number } {
+  const normalizedSlug = market.slug.toLowerCase();
+  const sideQuotes = bookState.quotes.filter((quote) => quote.slug.toLowerCase() === normalizedSlug && quote.side === side);
+  const polymarketQuote = { book: "Polymarket", slug: market.slug, side, price: fallbackPrice } satisfies BookQuote;
+  const quotes = [polymarketQuote, ...sideQuotes].filter((quote) => quote.price > 0 && quote.price < 1);
+  const best = quotes.sort((a, b) => a.price - b.price)[0] ?? polymarketQuote;
+  return {
+    book: best.book,
+    price: best.price,
+    bookCount: new Set(quotes.map((quote) => quote.book)).size,
+  };
 }
 
 function generateProbeSignal(
@@ -847,6 +1129,8 @@ function generateProbeSignal(
   ob: { imbalance: number; liquidity: number; spread: number },
   walletBalance: number,
   preset: ScanPreset,
+  modelState: ModelState,
+  bookState: BookMarketState,
 ): Signal | null {
   const config = presetConfig(preset);
   if (!config.allowProbes) {
@@ -877,10 +1161,20 @@ function generateProbeSignal(
     return null;
   }
 
-  const modelProb = side === "YES" ? clamp(market.yes_price + 0.03, 0.03, 0.97) : clamp(market.yes_price - 0.03, 0.03, 0.97);
+  const learnedAdjustment = (modelState.categoryAdjustments[category] ?? 0) + (modelState.strategyAdjustments[strategy] ?? 0);
+  const modelProb = side === "YES"
+    ? clamp(market.yes_price + 0.03 + learnedAdjustment, 0.03, 0.97)
+    : clamp(market.yes_price - 0.03 + learnedAdjustment, 0.03, 0.97);
   const edge = Math.abs(modelProb - market.yes_price);
+  const baseEntryPrice = side === "YES" ? market.yes_price : market.no_price;
+  const execution = findBestExecution(market, side, baseEntryPrice, bookState);
+  const entryPrice = execution.price;
+  const sideModelProb = side === "YES" ? modelProb : 1 - modelProb;
+  const marketProb = entryPrice;
   const setupQuality = computeSetupQuality(edge, 38, strategy, quality.flags, true);
   const qualityScore = clamp(Math.round((quality.marketQuality * 0.6) + (setupQuality * 0.4)), 1, 99);
+  const sizeUsdc = round(Math.min(walletBalance * 0.02, 8), 2);
+  const risk = assessExecutionRisk(market, ob, sizeUsdc, walletBalance, quality.flags, true);
 
   return {
     condition_id: market.condition_id,
@@ -888,10 +1182,19 @@ function generateProbeSignal(
     slug: market.slug,
     side,
     edge: round(edge, 4),
+    market_prob: round(marketProb, 4),
+    expected_value: round(computeExpectedValue(sizeUsdc, sideModelProb, marketProb), 2),
+    odds_movement: 0,
+    entry_timing: "untracked",
     model_prob: round(modelProb, 4),
-    entry_price: round(side === "YES" ? market.yes_price : market.no_price, 3),
-    size_usdc: round(Math.min(walletBalance * 0.02, 8), 2),
+    entry_price: round(entryPrice, 3),
+    execution_book: execution.book,
+    best_available_price: round(execution.price, 3),
+    price_improvement: round(baseEntryPrice - execution.price, 4),
+    book_count: execution.bookCount,
+    size_usdc: sizeUsdc,
     expiry: formatExpiry(expiryRaw),
+    hours_to_expiry: round(hoursUntil(expiryRaw), 1),
     confidence: 38,
     status: "Probe",
     volume: market.volume,
@@ -907,6 +1210,8 @@ function generateProbeSignal(
     trade_tier: "Probe",
     flags: quality.flags,
     is_probe: true,
+    risk_score: risk.score,
+    risk_flags: risk.flags,
   };
 }
 
@@ -923,10 +1228,21 @@ function signalToPaperBet(signal: Signal, openedAt: string): PaperBet {
     status: "open",
     confidence: signal.confidence,
     edge: signal.edge,
+    marketProb: signal.market_prob,
+    expectedValue: signal.expected_value,
+    oddsMovement: signal.odds_movement,
+    entryTiming: signal.entry_timing,
     modelProb: signal.model_prob,
     entryPrice: signal.entry_price,
+    executionBook: signal.execution_book,
+    bestAvailablePrice: signal.best_available_price,
+    priceImprovement: signal.price_improvement,
+    bookCount: signal.book_count,
     sizeUsdc: signal.size_usdc,
     expiry: signal.expiry,
+    hoursToExpiry: signal.hours_to_expiry,
+    riskScore: signal.risk_score,
+    riskFlags: signal.risk_flags,
     openedAtTs: Number.isFinite(openedAtTs) ? openedAtTs : Date.now(),
     openedAt,
   };
@@ -935,7 +1251,7 @@ function signalToPaperBet(signal: Signal, openedAt: string): PaperBet {
 async function fetchMarketResolution(
   slug: string,
   conditionId: string,
-): Promise<{ result: 0 | 1 | null; source: string } | null> {
+): Promise<{ result: 0 | 0.5 | 1 | null; source: string; yesPrice?: number; noPrice?: number } | null> {
   const endpoints = [
     `${GAMMA_URL}/markets?slug=${encodeURIComponent(slug)}`,
     `${GAMMA_URL}/markets?condition_id=${encodeURIComponent(conditionId)}`,
@@ -956,13 +1272,17 @@ async function fetchMarketResolution(
       if (!market.resolved) {
         return { result: null, source: "unresolved" };
       }
+      const closing = extractClosingPrices(market);
 
       const resolution = String(market.resolution ?? "").toLowerCase();
       if (resolution === "yes" || resolution === "1") {
-        return { result: 1, source: "resolution" };
+        return { result: 1, source: "resolution", ...closing };
       }
       if (resolution === "no" || resolution === "0") {
-        return { result: 0, source: "resolution" };
+        return { result: 0, source: "resolution", ...closing };
+      }
+      if (["push", "void", "draw", "cancelled", "canceled", "50/50"].includes(resolution)) {
+        return { result: 0.5, source: "push", yesPrice: 0.5, noPrice: 0.5 };
       }
 
       const tokens = Array.isArray(market.tokens) ? (market.tokens as Array<Record<string, unknown>>) : [];
@@ -970,7 +1290,7 @@ async function fetchMarketResolution(
         const outcome = String(token.outcome ?? "").toLowerCase();
         const price = Number(token.price ?? 0);
         if (price >= 0.99) {
-          return { result: outcome === "yes" ? 1 : 0, source: "token-price" };
+          return { result: outcome === "yes" ? 1 : 0, source: "token-price", ...closing };
         }
       }
     } catch {
@@ -979,6 +1299,18 @@ async function fetchMarketResolution(
   }
 
   return null;
+}
+
+function extractClosingPrices(market: Record<string, unknown>): { yesPrice?: number; noPrice?: number } {
+  const tokens = Array.isArray(market.tokens) ? (market.tokens as Array<Record<string, unknown>>) : [];
+  const yesToken = tokens.find((token) => String(token.outcome ?? "").toLowerCase() === "yes");
+  const noToken = tokens.find((token) => String(token.outcome ?? "").toLowerCase() === "no");
+  const yesPrice = Number(yesToken?.price);
+  const noPrice = Number(noToken?.price);
+  return {
+    yesPrice: Number.isFinite(yesPrice) ? yesPrice : undefined,
+    noPrice: Number.isFinite(noPrice) ? noPrice : undefined,
+  };
 }
 
 async function fetchSourcePreview(url: string): Promise<SourcePreview> {
@@ -1007,10 +1339,25 @@ async function fetchSourcePreview(url: string): Promise<SourcePreview> {
   };
 }
 
-function computePaperPnl(bet: PaperBet, result: 0 | 1): number {
+function computePaperPnl(bet: PaperBet, result: 0 | 0.5 | 1): number {
+  if (result === 0.5) {
+    return 0;
+  }
   const shares = bet.entryPrice > 0 ? bet.sizeUsdc / bet.entryPrice : 0;
   const won = (bet.side === "YES" && result === 1) || (bet.side === "NO" && result === 0);
   return round(won ? shares * (1 - bet.entryPrice) : -shares * bet.entryPrice, 2);
+}
+
+function closingPriceForBet(bet: PaperBet, resolution: { result: 0 | 0.5 | 1; yesPrice?: number; noPrice?: number }): number {
+  const observed = bet.side === "YES" ? resolution.yesPrice : resolution.noPrice;
+  if (typeof observed === "number" && Number.isFinite(observed)) {
+    return round(observed, 4);
+  }
+  if (resolution.result === 0.5) {
+    return 0.5;
+  }
+  const won = (bet.side === "YES" && resolution.result === 1) || (bet.side === "NO" && resolution.result === 0);
+  return won ? 1 : 0;
 }
 
 async function persistSnapshot(env: WorkerEnv, snapshot: Snapshot): Promise<void> {
@@ -1171,6 +1518,168 @@ async function getAnalytics(env: WorkerEnv): Promise<AnalyticsState> {
   return analytics;
 }
 
+async function getPortfolioGuard(env: WorkerEnv, modelState?: ModelState): Promise<PortfolioGuard> {
+  const activeModelState = modelState ?? await getModelState(env);
+  const analytics = await getAnalytics(env);
+  const reasons: string[] = [];
+  if (analytics.summary.stopLossActive) {
+    reasons.push("stop-loss");
+  }
+  if (activeModelState.driftStatus === "drift") {
+    reasons.push("model-drift");
+  }
+  if (analytics.summary.largestCorrelationGroup >= 4) {
+    reasons.push("correlation-cap");
+  }
+  if (analytics.summary.openExposure > Number.parseFloat(env.MAX_TRADE_USDC) * 6) {
+    reasons.push("exposure-cap");
+  }
+
+  const blocked = reasons.includes("stop-loss") || reasons.includes("model-drift") || reasons.includes("exposure-cap");
+  const watch = activeModelState.driftStatus === "watch" || analytics.summary.largestCorrelationGroup >= 3;
+  return {
+    allowNewBets: !blocked,
+    severity: blocked ? "blocked" : watch ? "watch" : "clear",
+    reasons: reasons.length ? reasons : ["clear"],
+    exposureMultiplier: watch ? 0.5 : 1,
+  };
+}
+
+async function getBacktest(env: WorkerEnv): Promise<BacktestState> {
+  const results = await fetchResultsForAnalytics(env);
+  return buildBacktest(results);
+}
+
+async function getModelState(env: WorkerEnv): Promise<ModelState> {
+  const cached = await env.SNAPSHOT_CACHE.get(MODEL_STATE_KEY, "json");
+  if (cached) {
+    return cached as ModelState;
+  }
+  const model = defaultModelState();
+  await cacheJson(env.SNAPSHOT_CACHE, MODEL_STATE_KEY, model, 60 * 60 * 24);
+  return model;
+}
+
+async function getBookMarketState(env: WorkerEnv): Promise<BookMarketState> {
+  const fallback: BookMarketState = {
+    updatedAt: formatTimestamp(new Date()),
+    source: "default",
+    quoteCount: 0,
+    books: ["Polymarket"],
+    quotes: [],
+  };
+  const quoteSources = await Promise.all([
+    env.EXTERNAL_ODDS_URL ? fetchExternalBookQuotes(env.EXTERNAL_ODDS_URL) : Promise.resolve([]),
+    env.KALSHI_MARKETS_ENABLED === "true" ? fetchKalshiBookQuotes() : Promise.resolve([]),
+  ]);
+  const quotes = quoteSources.flat();
+  if (!quotes.length) {
+    return fallback;
+  }
+
+  const books = [...new Set(["Polymarket", ...quotes.map((quote) => quote.book)])];
+  return {
+    updatedAt: formatTimestamp(new Date()),
+    source: "live",
+    quoteCount: quotes.length,
+    books,
+    quotes,
+  };
+}
+
+async function fetchExternalBookQuotes(url: string): Promise<BookQuote[]> {
+  try {
+    return normalizeExternalQuotes(await fetchJsonCached(url, 30));
+  } catch {
+    return [];
+  }
+}
+
+async function fetchKalshiBookQuotes(): Promise<BookQuote[]> {
+  try {
+    const payload = (await fetchJsonCached(`${KALSHI_URL}/markets?limit=200&status=open`, 60)) as { markets?: Array<Record<string, unknown>> };
+    return normalizeKalshiQuotes(payload.markets ?? []);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeExternalQuotes(payload: unknown): BookQuote[] {
+  const rows =
+    Array.isArray(payload) ? payload :
+    payload && typeof payload === "object" && Array.isArray((payload as { quotes?: unknown[] }).quotes) ? (payload as { quotes: unknown[] }).quotes :
+    [];
+
+  return rows.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const record = row as Record<string, unknown>;
+    const side = String(record.side ?? "").toUpperCase();
+    const price = Number(record.price ?? record.decimalPrice ?? record.probability);
+    const slug = String(record.slug ?? record.marketSlug ?? "").trim();
+    const book = String(record.book ?? record.source ?? "").trim();
+    if ((side !== "YES" && side !== "NO") || !slug || !book || !Number.isFinite(price) || price <= 0 || price >= 1) {
+      return [];
+    }
+    return [{
+      book,
+      slug,
+      side,
+      price,
+      deepLink: typeof record.deepLink === "string" ? record.deepLink : undefined,
+      updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : undefined,
+    } satisfies BookQuote];
+  });
+}
+
+function normalizeKalshiQuotes(markets: Array<Record<string, unknown>>): BookQuote[] {
+  return markets.flatMap((market) => {
+    const title = String(market.title ?? market.ticker ?? "").trim();
+    const ticker = String(market.ticker ?? "").trim();
+    const yesAsk = Number(market.yes_ask_dollars);
+    const noAsk = Number(market.no_ask_dollars);
+    const slug = slugifyMarketTitle(title || ticker);
+    const quotes: BookQuote[] = [];
+
+    if (slug && Number.isFinite(yesAsk) && yesAsk > 0 && yesAsk < 1) {
+      quotes.push({
+        book: "Kalshi",
+        slug,
+        side: "YES",
+        price: yesAsk,
+        deepLink: ticker ? `https://kalshi.com/markets/${ticker}` : undefined,
+      });
+    }
+    if (slug && Number.isFinite(noAsk) && noAsk > 0 && noAsk < 1) {
+      quotes.push({
+        book: "Kalshi",
+        slug,
+        side: "NO",
+        price: noAsk,
+        deepLink: ticker ? `https://kalshi.com/markets/${ticker}` : undefined,
+      });
+    }
+    return quotes;
+  });
+}
+
+function slugifyMarketTitle(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 180);
+}
+
+async function retrainModel(env: WorkerEnv): Promise<ModelState> {
+  const results = await fetchResultsForAnalytics(env);
+  const backtest = buildBacktest(results);
+  const model = trainModelFromResults(results, backtest);
+  await cacheJson(env.SNAPSHOT_CACHE, MODEL_STATE_KEY, model, 60 * 60 * 24 * 7);
+  await env.SNAPSHOT_CACHE.delete(SNAPSHOT_CACHE_KEY);
+  await env.SNAPSHOT_CACHE.delete(ANALYTICS_CACHE_KEY);
+  return model;
+}
+
 async function getDiscovery(env: WorkerEnv, query: string): Promise<DiscoveryState> {
   const normalizedQuery = query.trim().toLowerCase();
   const cacheKey = `${DISCOVERY_CACHE_PREFIX}${normalizedQuery}`;
@@ -1227,6 +1736,10 @@ async function persistPaperBetsFromSnapshot(env: WorkerEnv, snapshot: Snapshot):
   if (!env.CONVEX_SITE_URL || !env.CONVEX_INGEST_SECRET || !snapshot.signals.length) {
     return;
   }
+  const guard = await getPortfolioGuard(env);
+  if (!guard.allowNewBets) {
+    return;
+  }
 
   const bets = snapshot.signals.slice(0, 8).map((signal) => signalToPaperBet(signal, snapshot.updatedAt));
   await fetch(`${env.CONVEX_SITE_URL}/ingest/paper-bets`, {
@@ -1269,8 +1782,10 @@ async function resolveOpenPaperBets(env: WorkerEnv): Promise<void> {
     status: "resolved";
     resolvedAtTs: number;
     resolvedAt: string;
-    result: 0 | 1;
+    result: 0 | 0.5 | 1;
     pnl: number;
+    closingPrice?: number;
+    clv?: number;
     resolutionSource: string;
   }> = [];
 
@@ -1279,14 +1794,18 @@ async function resolveOpenPaperBets(env: WorkerEnv): Promise<void> {
     if (!resolution || resolution.result === null) {
       continue;
     }
+    const resolved = { ...resolution, result: resolution.result };
+    const closingPrice = closingPriceForBet(bet, resolved);
 
     updates.push({
       betKey: bet.betKey,
       status: "resolved",
       resolvedAtTs: Date.now(),
       resolvedAt: formatTimestamp(new Date()),
-      result: resolution.result,
-      pnl: computePaperPnl(bet, resolution.result),
+      result: resolved.result,
+      pnl: computePaperPnl(bet, resolved.result),
+      closingPrice,
+      clv: closingPrice === undefined ? undefined : round(closingPrice - bet.entryPrice, 4),
       resolutionSource: resolution.source,
     });
   }
@@ -1329,6 +1848,7 @@ function passesTimeWindow(category: MarketCategory, raw?: string): boolean {
 
   const daysLeft = (expiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
   const maxDays =
+    category === "sports" ? 14 :
     category === "macro" ? 120 :
     category === "awards" ? 365 :
     category === "politics" ? 365 :
@@ -1419,7 +1939,7 @@ function effectiveThreshold(category: MarketCategory, baseThreshold: number, pre
 }
 
 function categoryConfidenceBoost(category: MarketCategory): number {
-  return category === "macro" ? 10 : category === "politics" ? 8 : category === "awards" ? 6 : 0;
+  return category === "macro" ? 10 : category === "politics" ? 8 : category === "awards" ? 6 : category === "sports" ? 4 : 0;
 }
 
 function assessSignalQuality(
@@ -1434,7 +1954,7 @@ function assessSignalQuality(
   const liquidityScore = clamp(Math.round(Math.log10(Math.max(ob.liquidity, 1)) * 24 - 36), 5, 99);
   const spreadScore = clamp(Math.round(99 - ob.spread * 220), 0, 99);
   const timeScore = !Number.isFinite(daysLeft) ? 65 : clamp(Math.round(95 - Math.abs(daysLeft - 35)), 18, 95);
-  const categoryScore = category === "macro" ? 90 : category === "politics" ? 84 : category === "awards" ? 78 : 60;
+  const categoryScore = category === "macro" ? 90 : category === "politics" ? 84 : category === "awards" ? 78 : category === "sports" ? 72 : 60;
   const presetPenalty = preset === "strict" && isProbe ? 25 : 0;
   const marketQuality = clamp(
     Math.round(volumeScore * 0.22 + liquidityScore * 0.26 + spreadScore * 0.28 + timeScore * 0.12 + categoryScore * 0.12 - presetPenalty),
@@ -1511,10 +2031,19 @@ function demoSnapshot(detail: string): Snapshot {
       slug: "fed-cut-before-september",
       side: "YES",
       edge: 0.084,
+      market_prob: 0.528,
+      expected_value: 3.98,
+      odds_movement: -0.014,
+      entry_timing: "buying-dip",
       model_prob: 0.612,
       entry_price: 0.528,
+      execution_book: "Polymarket",
+      best_available_price: 0.528,
+      price_improvement: 0,
+      book_count: 1,
       size_usdc: 25,
       expiry: "Aug 20, 2026",
+      hours_to_expiry: 2510,
       confidence: 84,
       status: "Demo",
       volume: 240000,
@@ -1530,6 +2059,8 @@ function demoSnapshot(detail: string): Snapshot {
       trade_tier: "A",
       flags: [],
       is_probe: false,
+      risk_score: 18,
+      risk_flags: [],
     },
     {
       condition_id: "newsom-2028-before-labor-day",
@@ -1537,10 +2068,19 @@ function demoSnapshot(detail: string): Snapshot {
       slug: "newsom-2028-before-labor-day",
       side: "NO",
       edge: 0.071,
+      market_prob: 0.621,
+      expected_value: 2.12,
+      odds_movement: 0.006,
+      entry_timing: "stable-entry",
       model_prob: 0.433,
       entry_price: 0.621,
+      execution_book: "Polymarket",
+      best_available_price: 0.621,
+      price_improvement: 0,
+      book_count: 1,
       size_usdc: 18.5,
       expiry: "Sep 08, 2026",
+      hours_to_expiry: 2950,
       confidence: 71,
       status: "Demo",
       volume: 175000,
@@ -1556,6 +2096,8 @@ function demoSnapshot(detail: string): Snapshot {
       trade_tier: "B",
       flags: ["Headline risk"],
       is_probe: false,
+      risk_score: 24,
+      risk_flags: ["Headline risk"],
     },
     {
       condition_id: "cannes-palme-first-time-winner",
@@ -1563,10 +2105,19 @@ function demoSnapshot(detail: string): Snapshot {
       slug: "cannes-palme-first-time-winner",
       side: "YES",
       edge: 0.063,
+      market_prob: 0.524,
+      expected_value: 1.68,
+      odds_movement: 0.024,
+      entry_timing: "chasing-move",
       model_prob: 0.587,
       entry_price: 0.524,
+      execution_book: "Polymarket",
+      best_available_price: 0.524,
+      price_improvement: 0,
+      book_count: 1,
       size_usdc: 14,
       expiry: "May 24, 2026",
+      hours_to_expiry: 400,
       confidence: 63,
       status: "Demo",
       volume: 132000,
@@ -1582,6 +2133,8 @@ function demoSnapshot(detail: string): Snapshot {
       trade_tier: "C",
       flags: ["Seasonal liquidity"],
       is_probe: false,
+      risk_score: 29,
+      risk_flags: ["Seasonal liquidity"],
     },
   ];
 
@@ -1789,11 +2342,26 @@ function daysUntil(raw?: string): number {
   return (date.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
 }
 
+function hoursUntil(raw?: string): number {
+  if (!raw) return 0;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return 0;
+  return Math.max(0, (date.getTime() - Date.now()) / (1000 * 60 * 60));
+}
+
 function buildAnalytics(results: ResultsState): AnalyticsState {
   const allBets = [...(results.recent ?? []), ...(results.open ?? [])];
   const open = allBets.filter((bet) => bet.status === "open");
   const resolved = allBets.filter((bet) => bet.status === "resolved");
   const probeOpenCount = open.filter((bet) => (bet.confidence ?? 0) <= 40).length;
+  const totalResolvedStake = resolved.reduce((sum, bet) => sum + (bet.sizeUsdc ?? 0), 0);
+  const totalPnl = resolved.reduce((sum, bet) => sum + (bet.pnl ?? 0), 0);
+  const clvRows = resolved.filter((bet) => typeof bet.clv === "number");
+  const expectedValueRows = allBets.filter((bet) => typeof bet.expectedValue === "number");
+  const calibrationRows = resolved.filter((bet) => typeof bet.modelProb === "number" && typeof bet.result === "number");
+  const maxDrawdown = computeMaxDrawdown(resolved);
+  const correlationGroups = summarizeBuckets(open, (bet) => `${bet.category ?? "other"}:${bet.strategy ?? "unknown"}`);
+  const largestCorrelationGroup = correlationGroups.reduce((max, bucket) => Math.max(max, bucket.openBets), 0);
 
   return {
     updatedAt: formatTimestamp(new Date()),
@@ -1804,14 +2372,199 @@ function buildAnalytics(results: ResultsState): AnalyticsState {
       openExposure: round(open.reduce((sum, bet) => sum + (bet.sizeUsdc ?? 0), 0), 2),
       avgOpenEdge: round(open.length ? open.reduce((sum, bet) => sum + (bet.edge ?? 0), 0) / open.length : 0, 4),
       avgResolvedPnl: round(resolved.length ? resolved.reduce((sum, bet) => sum + (bet.pnl ?? 0), 0) / resolved.length : 0, 2),
+      roi: round(totalResolvedStake ? totalPnl / totalResolvedStake : 0, 4),
+      maxDrawdown: round(maxDrawdown, 2),
+      avgClv: round(clvRows.length ? clvRows.reduce((sum, bet) => sum + (bet.clv ?? 0), 0) / clvRows.length : 0, 4),
+      clvWinRate: round(clvRows.length ? clvRows.filter((bet) => (bet.clv ?? 0) > 0).length / clvRows.length : 0, 4),
+      avgExpectedValue: round(
+        expectedValueRows.length
+          ? expectedValueRows.reduce((sum, bet) => sum + (bet.expectedValue ?? 0), 0) / expectedValueRows.length
+          : 0,
+        2,
+      ),
+      calibrationError: round(
+        calibrationRows.length
+          ? calibrationRows.reduce((sum, bet) => sum + Math.abs((bet.modelProb ?? 0.5) - (bet.result ?? 0)), 0) / calibrationRows.length
+          : 0,
+        4,
+      ),
+      stopLossActive: totalPnl < -Math.max(totalResolvedStake * 0.08, 25) || maxDrawdown > Math.max(totalResolvedStake * 0.12, 30),
+      largestCorrelationGroup,
       strictOpenCount: open.length - probeOpenCount,
       probeOpenCount,
     },
     byCategory: summarizeBuckets(allBets, (bet) => bet.category ?? "other"),
     byStrategy: summarizeBuckets(allBets, (bet) => bet.strategy ?? "unknown"),
     byPriceBand: summarizeBuckets(allBets, (bet) => priceBandFor(bet.entryPrice ?? 0)),
+    byTimeToExpiry: summarizeBuckets(allBets, (bet) => timeBucketFor(bet.hoursToExpiry ?? 0)),
     insights: buildInsights(allBets, open, resolved),
   };
+}
+
+function buildBacktest(results: ResultsState): BacktestState {
+  const resolved = [...(results.recent ?? [])]
+    .filter((bet) => bet.status === "resolved")
+    .sort((a, b) => (a.resolvedAtTs ?? a.openedAtTs ?? 0) - (b.resolvedAtTs ?? b.openedAtTs ?? 0));
+  const strategies = [...new Set(resolved.map((bet) => bet.strategy ?? "unknown"))]
+    .map((strategy) => buildStrategyBacktest(strategy, resolved.filter((bet) => (bet.strategy ?? "unknown") === strategy)))
+    .sort((a, b) => b.recentRoi - a.recentRoi || b.thresholds[0]?.bets - a.thresholds[0]?.bets);
+
+  return {
+    updatedAt: formatTimestamp(new Date()),
+    resolvedBets: resolved.length,
+    strategies,
+    recommendations: buildBacktestRecommendations(strategies),
+  };
+}
+
+function defaultModelState(): ModelState {
+  return {
+    version: "moneyflow-v1",
+    trainedAt: formatTimestamp(new Date()),
+    resolvedBets: 0,
+    source: "default",
+    categoryAdjustments: {},
+    strategyAdjustments: {},
+    edgeFloorAdjustments: {},
+    kellyFraction: 0.25,
+    driftStatus: "insufficient-data",
+    recommendations: ["Model is using default priors until resolved bet history is deep enough."],
+  };
+}
+
+function trainModelFromResults(results: ResultsState, backtest: BacktestState): ModelState {
+  const resolved = [...(results.recent ?? [])].filter((bet) => bet.status === "resolved" && typeof bet.result === "number");
+  if (resolved.length < 5) {
+    return { ...defaultModelState(), resolvedBets: resolved.length };
+  }
+
+  const categoryAdjustments = trainGroupAdjustments(resolved, (bet) => bet.category ?? "other") as Partial<Record<MarketCategory, number>>;
+  const strategyAdjustments = trainGroupAdjustments(resolved, (bet) => bet.strategy ?? "consensus-fade") as Partial<Record<StrategyMode, number>>;
+  const edgeFloorAdjustments: Partial<Record<StrategyMode, number>> = {};
+  for (const strategy of backtest.strategies) {
+    const defaultFloor = 0.06;
+    edgeFloorAdjustments[strategy.strategy as StrategyMode] = round(clamp(strategy.bestMinEdge - defaultFloor, -0.02, 0.04), 4);
+  }
+  const bestKelly = backtest.strategies.length
+    ? backtest.strategies.reduce((sum, strategy) => sum + strategy.recommendedKellyFraction, 0) / backtest.strategies.length
+    : 0.25;
+  const driftStatus = backtest.strategies.some((strategy) => strategy.driftStatus === "drift")
+    ? "drift"
+    : backtest.strategies.some((strategy) => strategy.driftStatus === "watch")
+      ? "watch"
+      : "stable";
+
+  return {
+    version: "moneyflow-v1",
+    trainedAt: formatTimestamp(new Date()),
+    resolvedBets: resolved.length,
+    source: "trained",
+    categoryAdjustments,
+    strategyAdjustments,
+    edgeFloorAdjustments,
+    kellyFraction: round(clamp(bestKelly, 0.05, 0.35), 3),
+    driftStatus,
+    recommendations: backtest.recommendations,
+  };
+}
+
+function trainGroupAdjustments(bets: PaperBet[], getKey: (bet: PaperBet) => string): Record<string, number> {
+  const groups = new Map<string, PaperBet[]>();
+  for (const bet of bets) {
+    const rows = groups.get(getKey(bet)) ?? [];
+    rows.push(bet);
+    groups.set(getKey(bet), rows);
+  }
+
+  const adjustments: Record<string, number> = {};
+  for (const [key, rows] of groups.entries()) {
+    if (rows.length < 3) {
+      continue;
+    }
+    const calibrationBias = rows.reduce((sum, bet) => sum + ((bet.result ?? 0) - (bet.modelProb ?? 0.5)), 0) / rows.length;
+    const roi = summarizeBacktestSet(rows).roi;
+    const roiTerm = clamp(roi, -0.2, 0.2) * 0.04;
+    adjustments[key] = round(clamp(calibrationBias * 0.08 + roiTerm, -0.05, 0.05), 4);
+  }
+  return adjustments;
+}
+
+function buildStrategyBacktest(strategy: string, bets: PaperBet[]): StrategyBacktest {
+  const thresholds = [0.02, 0.04, 0.06, 0.08, 0.1].map((minEdge) => summarizeBacktestThreshold(bets, minEdge));
+  const candidates = thresholds.filter((row) => row.bets >= 3);
+  const best = (candidates.length ? candidates : thresholds).sort((a, b) => b.roi - a.roi || b.bets - a.bets)[0] ?? thresholds[0];
+  const midpoint = Math.floor(bets.length / 2);
+  const baseline = summarizeBacktestSet(bets.slice(0, midpoint));
+  const recent = summarizeBacktestSet(bets.slice(midpoint));
+  const calibrationRows = bets.filter((bet) => typeof bet.result === "number" && bet.result !== 0.5);
+  const calibrationError = calibrationRows.length
+    ? calibrationRows.reduce((sum, bet) => sum + Math.abs((bet.modelProb ?? 0.5) - (bet.result ?? 0)), 0) / calibrationRows.length
+    : 0;
+  const roiDrop = baseline.roi - recent.roi;
+  const driftStatus =
+    bets.length < 8 ? "insufficient-data" :
+    calibrationError > 0.38 || roiDrop > 0.18 ? "drift" :
+    calibrationError > 0.3 || roiDrop > 0.1 ? "watch" :
+    "stable";
+
+  return {
+    strategy,
+    bestMinEdge: best.minEdge,
+    recommendedKellyFraction: recommendedKellyFraction(best.roi, best.maxDrawdown),
+    driftStatus,
+    calibrationError: round(calibrationError, 4),
+    recentRoi: recent.roi,
+    baselineRoi: baseline.roi,
+    thresholds,
+  };
+}
+
+function summarizeBacktestThreshold(bets: PaperBet[], minEdge: number): BacktestThreshold {
+  return { minEdge, ...summarizeBacktestSet(bets.filter((bet) => (bet.edge ?? 0) >= minEdge)) };
+}
+
+function summarizeBacktestSet(bets: PaperBet[]): Omit<BacktestThreshold, "minEdge"> {
+  const stake = bets.reduce((sum, bet) => sum + (bet.sizeUsdc ?? 0), 0);
+  const pnl = bets.reduce((sum, bet) => sum + (bet.pnl ?? 0), 0);
+  const wins = bets.filter((bet) => (bet.pnl ?? 0) > 0).length;
+  return {
+    bets: bets.length,
+    roi: round(stake ? pnl / stake : 0, 4),
+    winRate: round(bets.length ? wins / bets.length : 0, 4),
+    totalPnl: round(pnl, 2),
+    maxDrawdown: round(computeMaxDrawdown(bets), 2),
+  };
+}
+
+function recommendedKellyFraction(roi: number, maxDrawdown: number): number {
+  if (roi <= 0) return 0.05;
+  if (maxDrawdown > 50) return 0.1;
+  if (roi > 0.12) return 0.35;
+  if (roi > 0.05) return 0.25;
+  return 0.15;
+}
+
+function buildBacktestRecommendations(strategies: StrategyBacktest[]): string[] {
+  if (!strategies.length) {
+    return ["No resolved bets are available for backtesting yet."];
+  }
+  return strategies.slice(0, 4).map((strategy) => {
+    const verb = strategy.driftStatus === "drift" ? "pause or reduce" : strategy.driftStatus === "watch" ? "keep capped" : "continue";
+    return `${strategy.strategy}: ${verb}; best edge floor ${pct(strategy.bestMinEdge)}, Kelly fraction ${strategy.recommendedKellyFraction.toFixed(2)}.`;
+  });
+}
+
+function computeMaxDrawdown(resolved: PaperBet[]): number {
+  const ordered = [...resolved].sort((a, b) => (a.resolvedAtTs ?? a.openedAtTs ?? 0) - (b.resolvedAtTs ?? b.openedAtTs ?? 0));
+  let equity = 0;
+  let peak = 0;
+  let maxDrawdown = 0;
+  for (const bet of ordered) {
+    equity += bet.pnl ?? 0;
+    peak = Math.max(peak, equity);
+    maxDrawdown = Math.max(maxDrawdown, peak - equity);
+  }
+  return maxDrawdown;
 }
 
 function summarizeBuckets(bets: PaperBet[], getKey: (bet: PaperBet) => string): AnalyticsBucket[] {
@@ -1851,9 +2604,29 @@ function priceBandFor(entryPrice: number): string {
   return "0.75+";
 }
 
+function timeBucketFor(hoursToExpiry: number): string {
+  if (hoursToExpiry <= 6) return "<6h";
+  if (hoursToExpiry <= 24) return "6-24h";
+  if (hoursToExpiry <= 72) return "1-3d";
+  if (hoursToExpiry <= 168) return "3-7d";
+  if (hoursToExpiry <= 720) return "1-4w";
+  return "1m+";
+}
+
+function entryTimingFor(oddsMovement: number): string {
+  if (oddsMovement > 0.02) return "chasing-move";
+  if (oddsMovement < -0.02) return "buying-dip";
+  return "stable-entry";
+}
+
 function buildInsights(allBets: PaperBet[], open: PaperBet[], resolved: PaperBet[]): string[] {
   const bestCategory = summarizeBuckets(allBets, (bet) => bet.category ?? "other")[0];
   const bestStrategy = summarizeBuckets(allBets, (bet) => bet.strategy ?? "unknown")[0];
+  const clvRows = resolved.filter((bet) => typeof bet.clv === "number");
+  const avgClv = clvRows.length ? clvRows.reduce((sum, bet) => sum + (bet.clv ?? 0), 0) / clvRows.length : 0;
+  const totalStake = resolved.reduce((sum, bet) => sum + (bet.sizeUsdc ?? 0), 0);
+  const totalPnl = resolved.reduce((sum, bet) => sum + (bet.pnl ?? 0), 0);
+  const roi = totalStake ? totalPnl / totalStake : 0;
   const insights = [
     open.length
       ? `Open exposure is ${usd(open.reduce((sum, bet) => sum + (bet.sizeUsdc ?? 0), 0))}; keep sizing capped until resolved P&L is real.`
@@ -1865,8 +2638,11 @@ function buildInsights(allBets: PaperBet[], open: PaperBet[], resolved: PaperBet
       ? `${bestStrategy.key} is the most active strategy lane so far.`
       : "No strategy lane is active yet.",
     resolved.length
-      ? `Average realized P&L per resolved bet is ${usd(resolved.reduce((sum, bet) => sum + (bet.pnl ?? 0), 0) / resolved.length)}.`
+      ? `Resolved ROI is ${pct(roi)} with max drawdown ${usd(computeMaxDrawdown(resolved))}.`
       : "Resolved-history depth is still too thin; keep learning before sizing up.",
+    clvRows.length
+      ? `Average CLV is ${pct(avgClv)}; positive CLV means entries are beating the close.`
+      : "CLV will populate as open bets resolve with closing prices.",
   ];
   return insights;
 }

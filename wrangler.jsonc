@@ -37,6 +37,8 @@
     "KELLY_FRACTION": "0.25",
     "MAX_TRADE_USDC": "25",
     "EDGE_THRESHOLD": "0.07",
-    "SNAPSHOT_LIMIT": "60"
+    "SNAPSHOT_LIMIT": "60",
+    "EXTERNAL_ODDS_URL": "",
+    "KALSHI_MARKETS_ENABLED": "true"
   }
 }

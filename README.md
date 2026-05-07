@@ -142,6 +142,13 @@ The Worker exposes:
 - `/api/snapshot`
 - `/api/history`
 - `/api/scan`
+- `/api/results`
+- `/api/analytics`
+- `/api/backtest`
+- `/api/model`
+- `/api/model/retrain`
+- `/api/books`
+- `/api/discovery`
 - `/api/research`
 - `/api/research/refresh`
 
@@ -179,6 +186,22 @@ Bet size is calculated using Kelly Criterion:
 Kelly % = (p × b - q) / b
 size = Kelly % × KELLY_FRACTION × wallet_balance
 ```
+
+## Betting Intelligence Layer
+
+The Cloudflare/Convex path now records paper bets with the data needed for training and validation:
+
+- entry market probability, model probability, expected value, odds movement, and entry timing
+- Kelly-sized stake, exposure score, risk flags, and category/strategy correlation controls
+- automatic resolution with win/loss/push result, P&L, closing price, and CLV
+- analytics for ROI, win rate, drawdown, CLV, EV, calibration error, category/strategy/time buckets, and stop-loss state
+- backtesting and drift detection by strategy, including recommended edge floors and Kelly fractions
+- a retraining loop that stores model priors in Worker KV and applies learned category/strategy adjustments during scanning
+- built-in Kalshi market-data ingestion plus optional multi-book line shopping through `EXTERNAL_ODDS_URL`, using normalized quotes with `book`, `slug`, `side`, and `price`
+
+Risk controls reject signals with excessive position size, book-impact/slippage, spread risk, total scan exposure, category concentration, or too many correlated category/strategy positions. The Worker scanner covers politics, macro, awards, and short-window sports markets from Polymarket. The local Python bot remains paper-first, but `PAPER_TRADE=false` now initializes the CLOB client when wallet credentials are configured.
+
+Portfolio guards also run before new paper bets are captured. Stop-loss, model drift, exposure caps, and severe correlation concentration block new entries; watch-level drift/correlation halves available scan exposure.
 
 ---
 

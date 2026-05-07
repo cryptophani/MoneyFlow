@@ -15,6 +15,8 @@ const appState = {
   research: null,
   results: null,
   analytics: null,
+  backtest: null,
+  model: null,
   discovery: null,
   fallbackSnapshot: null,
 };
@@ -43,6 +45,8 @@ const fallbackSnapshot = {
       side: "YES",
       edge: 0.084,
       size_usdc: 25,
+      execution_book: "Polymarket",
+      book_count: 1,
       expiry: "Aug 20, 2026",
       category: "macro",
       strategy: "consensus-fade",
@@ -60,6 +64,8 @@ const fallbackSnapshot = {
       side: "NO",
       edge: 0.071,
       size_usdc: 18.5,
+      execution_book: "Polymarket",
+      book_count: 1,
       expiry: "Sep 08, 2026",
       category: "politics",
       strategy: "consensus-fade",
@@ -77,6 +83,8 @@ const fallbackSnapshot = {
       side: "YES",
       edge: 0.063,
       size_usdc: 14,
+      execution_book: "Polymarket",
+      book_count: 1,
       expiry: "May 24, 2026",
       category: "awards",
       strategy: "event-specialist",
@@ -198,6 +206,14 @@ const fallbackAnalytics = {
     openExposure: 43.5,
     avgOpenEdge: 0.071,
     avgResolvedPnl: 2.3,
+    roi: 0.176,
+    maxDrawdown: 6.4,
+    avgClv: 0.018,
+    clvWinRate: 0.625,
+    avgExpectedValue: 1.86,
+    calibrationError: 0.31,
+    stopLossActive: false,
+    largestCorrelationGroup: 2,
     strictOpenCount: 3,
     probeOpenCount: 1,
   },
@@ -212,6 +228,7 @@ const fallbackAnalytics = {
     { key: "liquidity-reversion", totalBets: 1, openBets: 0, resolvedBets: 1, wins: 0, winRate: 0, totalPnl: 0, exposure: 0, avgEdge: 0.03 },
   ],
   byPriceBand: [],
+  byTimeToExpiry: [],
   insights: [
     "Open exposure is capped while resolved history is still thin.",
     "Macro is leading the current book quality.",
@@ -225,6 +242,37 @@ const fallbackDiscovery = {
   updatedAt: "May 02, 2026, 09:00 UTC",
   source: "demo",
   results: [],
+};
+
+const fallbackBacktest = {
+  updatedAt: "May 02, 2026, 09:00 UTC",
+  resolvedBets: 8,
+  strategies: [
+    {
+      strategy: "consensus-fade",
+      bestMinEdge: 0.06,
+      recommendedKellyFraction: 0.25,
+      driftStatus: "stable",
+      calibrationError: 0.24,
+      recentRoi: 0.12,
+      baselineRoi: 0.16,
+      thresholds: [],
+    },
+  ],
+  recommendations: ["consensus-fade: continue; best edge floor 6.00%, Kelly fraction 0.25."],
+};
+
+const fallbackModel = {
+  version: "moneyflow-v1",
+  trainedAt: "May 02, 2026, 09:00 UTC",
+  resolvedBets: 0,
+  source: "default",
+  categoryAdjustments: {},
+  strategyAdjustments: {},
+  edgeFloorAdjustments: {},
+  kellyFraction: 0.25,
+  driftStatus: "insufficient-data",
+  recommendations: ["Model is using default priors until resolved bet history is deep enough."],
 };
 
 const fallbackSourcePreview = {
@@ -389,7 +437,10 @@ function renderSnapshot(snapshot) {
             <div class="quality-breakdown">M ${escapeHtml(String(signal.market_quality ?? "—"))} / S ${escapeHtml(String(signal.setup_quality ?? "—"))}</div>
           </td>
           <td>${money(signal.size_usdc)}</td>
-          <td>${escapeHtml(signal.expiry)}</td>
+          <td>
+            <div>${escapeHtml(signal.expiry)}</div>
+            <div class="quality-breakdown">${escapeHtml(signal.execution_book ?? "Polymarket")} · ${signal.book_count ?? 1} book${(signal.book_count ?? 1) === 1 ? "" : "s"}</div>
+          </td>
           <td>
             <div>${escapeHtml(signal.rationale ?? "—")}</div>
             <div class="flag-list">${(signal.flags ?? []).map((flag) => `<span class="watch-chip">${escapeHtml(flag)}</span>`).join("")}</div>
@@ -594,9 +645,9 @@ function renderAnalytics(analytics) {
   if (summaryNode) {
     summaryNode.innerHTML = `
       <article class="mini-stat"><span class="metric-label">Open exposure</span><strong>${money(summary.openExposure ?? 0)}</strong></article>
-      <article class="mini-stat"><span class="metric-label">Avg open edge</span><strong>${percent(summary.avgOpenEdge ?? 0)}</strong></article>
-      <article class="mini-stat"><span class="metric-label">Avg resolved P&amp;L</span><strong>${money(summary.avgResolvedPnl ?? 0)}</strong></article>
-      <article class="mini-stat"><span class="metric-label">Strict / Probe open</span><strong>${summary.strictOpenCount ?? 0} / ${summary.probeOpenCount ?? 0}</strong></article>
+      <article class="mini-stat"><span class="metric-label">ROI / Drawdown</span><strong>${percent(summary.roi ?? 0)} / ${money(summary.maxDrawdown ?? 0)}</strong></article>
+      <article class="mini-stat"><span class="metric-label">CLV / EV</span><strong>${percent(summary.avgClv ?? 0)} / ${money(summary.avgExpectedValue ?? 0)}</strong></article>
+      <article class="mini-stat"><span class="metric-label">Stop loss</span><strong>${summary.stopLossActive ? "Active" : "Clear"}</strong></article>
     `;
   }
 
@@ -609,6 +660,60 @@ function renderAnalytics(analytics) {
 
   renderBucketTable("analytics-category-table", analytics?.byCategory ?? fallbackAnalytics.byCategory);
   renderBucketTable("analytics-strategy-table", analytics?.byStrategy ?? fallbackAnalytics.byStrategy);
+}
+
+function renderBacktest(backtest) {
+  appState.backtest = backtest;
+  const node = document.getElementById("backtest-list");
+  if (!node) return;
+
+  const strategies = backtest?.strategies ?? fallbackBacktest.strategies;
+  const recommendations = backtest?.recommendations ?? fallbackBacktest.recommendations;
+  if (!strategies.length) {
+    node.innerHTML = `<article class="stack-item"><p class="stack-title">No resolved bets to backtest yet</p></article>`;
+    return;
+  }
+
+  node.innerHTML = strategies
+    .slice(0, 4)
+    .map(
+      (item) => `
+      <article class="stack-item">
+        <div>
+          <p class="stack-title">${escapeHtml(item.strategy)}</p>
+          <p class="stack-detail">${escapeHtml(recommendations.find((line) => line.startsWith(item.strategy)) ?? "Waiting for more resolved bets.")}</p>
+        </div>
+        <div class="stack-meta">
+          <span>${escapeHtml(item.driftStatus)}</span>
+          <span>${percent(item.bestMinEdge ?? 0)} edge</span>
+          <span>${Number(item.recommendedKellyFraction ?? 0).toFixed(2)} Kelly</span>
+        </div>
+      </article>
+    `,
+    )
+    .join("");
+}
+
+function renderModel(model) {
+  appState.model = model;
+  const state = model ?? fallbackModel;
+  const summaryNode = document.getElementById("model-state");
+  if (summaryNode) {
+    summaryNode.innerHTML = `
+      <article class="mini-stat"><span class="metric-label">Source</span><strong>${escapeHtml(state.source ?? "default")}</strong></article>
+      <article class="mini-stat"><span class="metric-label">Resolved bets</span><strong>${state.resolvedBets ?? 0}</strong></article>
+      <article class="mini-stat"><span class="metric-label">Kelly fraction</span><strong>${Number(state.kellyFraction ?? 0).toFixed(2)}</strong></article>
+      <article class="mini-stat"><span class="metric-label">Drift</span><strong>${escapeHtml(state.driftStatus ?? "insufficient-data")}</strong></article>
+    `;
+  }
+
+  const recommendationsNode = document.getElementById("model-recommendations");
+  if (recommendationsNode) {
+    recommendationsNode.innerHTML = (state.recommendations ?? fallbackModel.recommendations)
+      .slice(0, 4)
+      .map((item) => `<article class="insight-item">${escapeHtml(item)}</article>`)
+      .join("");
+  }
 }
 
 function renderDiscovery(discovery) {
@@ -754,13 +859,15 @@ async function fetchJson(url) {
 async function loadAll() {
   try {
     const discoveryQuery = document.getElementById("discovery-query")?.value?.trim() || "election";
-    const [snapshot, fallbackSnapshot, historyPayload, research, results, analytics, discovery] = await Promise.all([
+    const [snapshot, fallbackSnapshot, historyPayload, research, results, analytics, backtest, model, discovery] = await Promise.all([
       fetchJson(`/api/snapshot?preset=${encodeURIComponent(appState.preset)}`),
       appState.preset === "discovery" ? Promise.resolve(null) : fetchJson("/api/snapshot?preset=discovery"),
       fetchJson("/api/history"),
       fetchJson("/api/research"),
       fetchJson("/api/results"),
       fetchJson("/api/analytics"),
+      fetchJson("/api/backtest"),
+      fetchJson("/api/model"),
       fetchJson(`/api/discovery?q=${encodeURIComponent(discoveryQuery)}`),
     ]);
 
@@ -770,6 +877,8 @@ async function loadAll() {
     renderResearch(research);
     renderResults(results);
     renderAnalytics(analytics);
+    renderBacktest(backtest);
+    renderModel(model);
     renderDiscovery(discovery);
   } catch {
     appState.fallbackSnapshot = null;
@@ -778,6 +887,8 @@ async function loadAll() {
     renderResearch(fallbackResearch);
     renderResults(fallbackResults);
     renderAnalytics(fallbackAnalytics);
+    renderBacktest(fallbackBacktest);
+    renderModel(fallbackModel);
     renderDiscovery(fallbackDiscovery);
   }
 }
@@ -793,6 +904,8 @@ document.getElementById("refresh-scan")?.addEventListener("click", async () => {
     renderResearch(payload.research ?? fallbackResearch);
     renderResults(payload.results ?? fallbackResults);
     renderAnalytics(payload.analytics ?? fallbackAnalytics);
+    renderBacktest(await fetchJson("/api/backtest"));
+    renderModel(await fetchJson("/api/model"));
     const history = await fetchJson("/api/history");
     renderHistory(history.history ?? []);
   } catch {
@@ -801,6 +914,8 @@ document.getElementById("refresh-scan")?.addEventListener("click", async () => {
     renderResearch(fallbackResearch);
     renderResults(fallbackResults);
     renderAnalytics(fallbackAnalytics);
+    renderBacktest(fallbackBacktest);
+    renderModel(fallbackModel);
   }
 });
 
@@ -843,6 +958,8 @@ renderResearch(fallbackResearch);
 renderHistory([]);
 renderResults(fallbackResults);
 renderAnalytics(fallbackAnalytics);
+renderBacktest(fallbackBacktest);
+renderModel(fallbackModel);
 renderDiscovery(fallbackDiscovery);
 renderSourcePreview({ ...fallbackSourcePreview, url: "#" });
 loadAll();
